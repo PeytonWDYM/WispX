@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
@@ -9,7 +9,7 @@
     <AssemblyName>WispX</AssemblyName>
     <RootNamespace>WispX</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationIcon>WispX.ico</ApplicationIcon>
+    <ApplicationIcon>Assets/WispX.ico</ApplicationIcon>
     <Version>1.0.0</Version>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
@@ -24,8 +24,5 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="NAudio.WinMM" Version="2.2.1" />
-  </ItemGroup>
-  <ItemGroup>
-    <Resource Include="WispX.ico" />
   </ItemGroup>
 </Project>

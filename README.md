@@ -37,5 +37,20 @@ The tray icon has: copy last transcript, sounds, idle pill, start with Windows, 
 Needs the .NET 9 SDK.
 
 ```
-dotnet publish -c Release
+dotnet publish src -c Release
+```
+
+The exe lands in `src/bin/Release/net9.0-windows/win-x64/publish/`.
+
+## Layout
+
+```
+src/
+  App.xaml.cs         startup, tray, dictation flow
+  Audio/              mic recording, sounds
+  Input/              Ctrl+Win hook, pasting, Win32 calls
+  Transcription/      ChatGPT transcribe + Codex login
+  UI/                 the overlay pill
+  Setup/              self-install, settings
+  Assets/             icon
 ```
