@@ -1,7 +1,10 @@
 //! Gets a finished transcript to the user without ever typing into the wrong
 //! window. Dictating takes seconds and people switch windows meanwhile, so the
-//! rule is simple: paste only into the window that was focused when dictation
-//! ended, and otherwise leave the text on the clipboard and say so.
+//! rule is simple: paste only into the window that had focus as dictation began,
+//! if it has focus again by the time the text is ready, and otherwise leave the
+//! text on the clipboard and say so. Asking only once dictation has ended is not
+//! safe: by the time KWin answers, focus may already have moved to another window,
+//! which would then look like the target.
 
 use super::clipboard::Clipboard;
 use super::kwin::FocusInfo;
@@ -123,7 +126,7 @@ pub struct Delivered<'a> {
     pub mode: PasteMode,
     pub shortcut: PasteShortcut,
     pub restore_clipboard: bool,
-    /// The window focused when dictation ended.
+    /// The window seen to have focus before dictation ended, if KWin answered.
     pub target: Option<&'a FocusInfo>,
     pub clipboard: Result<&'a dyn Clipboard, String>,
     pub injector: Option<&'a dyn Injector>,
@@ -421,7 +424,7 @@ mod tests {
         );
         assert!(injector.sent.lock().unwrap().is_empty());
 
-        // Focus could not be determined when dictation ended.
+        // Focus could not be determined before dictation ended.
         injector.ready = true;
         assert_eq!(
             run(&clipboard, Some(&injector), None, PasteMode::Auto, true),

@@ -51,10 +51,12 @@ This uses the RemoteDesktop portal, asking for the keyboard only, because that's
 
 ## What happens to your words
 
-WispX notes which window has focus when you stop talking. Once the text is ready, it checks again:
+WispX notes which window has focus when you start talking. Once the text is ready, it checks again:
 
 - **Same window:** it pastes, using Ctrl + Shift + V in terminals and Ctrl + V elsewhere, then puts your previous clipboard text back.
 - **Different window, or it can't tell:** it never presses a key. Your words stay on the clipboard for you to paste.
+
+So if you switch windows while talking, the text stays on the clipboard unless you're back in the first window by the time it's ready. The same goes if KWin hasn't said which window has focus by the time you stop talking.
 
 Good to know:
 

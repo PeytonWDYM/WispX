@@ -910,6 +910,13 @@ struct DesktopState {
     /// What successive focus checks report; the last one repeats.
     focus: Vec<(String, String)>,
     focus_checks: usize,
+    /// Leaves focus checks unanswered, the way a busy KWin would.
+    hold_focus: bool,
+    /// How many held checks may be answered despite `hold_focus`.
+    let_through: usize,
+    held_focus: usize,
+    /// Focus checks that have run to their end.
+    finished_focus_checks: usize,
     notifications: Vec<(String, String)>,
 }
 
@@ -949,6 +956,7 @@ impl MockDesktop {
                 serial: 0,
                 scripts: HashMap::new(),
                 next_script: 0,
+                held: Vec::new(),
             };
             // The bus going away when a test ends is how this stops.
             while mock.step(&inbox).is_ok() {}
@@ -958,6 +966,25 @@ impl MockDesktop {
             state,
             commands,
         })
+    }
+
+    fn focus_on(&self, id: &str, class: &str) {
+        self.state().focus = vec![(id.to_string(), class.to_string())];
+    }
+
+    /// Dictation is pasted only if focus is already known when it ends. A check
+    /// takes a few round trips, so wait for it rather than hope it was quick.
+    fn wait_for_focus_check(&self, count: usize) {
+        wait_until("the focus check", || {
+            self.state().finished_focus_checks >= count
+        });
+        thread::sleep(Duration::from_millis(150));
+    }
+
+    fn wait_for_held_focus_checks(&self, count: usize) {
+        wait_until("a focus check to be held", || {
+            self.state().held_focus == count
+        });
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, DesktopState> {
@@ -992,6 +1019,8 @@ struct Mock {
     /// Loaded KWin scripts: their object path, and who to report back to.
     scripts: HashMap<String, String>,
     next_script: i32,
+    /// Focus checks waiting to be answered, oldest first.
+    held: Vec<Message>,
 }
 
 impl Mock {
@@ -1030,13 +1059,35 @@ impl Mock {
                 }
             }
         }
+        for call in self.released_focus_checks() {
+            self.answer(&call)?;
+        }
         let Some(message) = self.bus.next_message(Duration::from_millis(10))? else {
             return Ok(());
         };
         if message.kind == Kind::MethodCall {
-            self.answer(&message)?;
+            let mut state = self.state.lock().unwrap();
+            if state.hold_focus && message.member.as_deref() == Some("loadScript") {
+                state.held_focus += 1;
+                drop(state);
+                self.held.push(message);
+            } else {
+                drop(state);
+                self.answer(&message)?;
+            }
         }
         Ok(())
+    }
+
+    fn released_focus_checks(&mut self) -> Vec<Message> {
+        let mut state = self.state.lock().unwrap();
+        let count = if state.hold_focus {
+            state.let_through.min(self.held.len())
+        } else {
+            self.held.len()
+        };
+        state.let_through = state.let_through.saturating_sub(count);
+        self.held.drain(..count).collect()
     }
 
     /// Answers a portal request: reply with the handle, then signal the result.
@@ -1184,7 +1235,14 @@ impl Mock {
                 self.bus.reply(call, Vec::new())
             }
             ("org.kde.kwin.Scripting", "loadScript") => {
-                let source = fs::read_to_string(call.body[0].as_str().unwrap()).unwrap();
+                // A held check can outlast its caller, which removes the script.
+                let Ok(source) = fs::read_to_string(call.body[0].as_str().unwrap()) else {
+                    return self.bus.reply_error(
+                        call,
+                        "org.freedesktop.DBus.Error.Failed",
+                        "no script",
+                    );
+                };
                 let target = source
                     .split("callDBus(\"")
                     .nth(1)
@@ -1225,6 +1283,7 @@ impl Mock {
                     .map(|_| ())
             }
             ("org.kde.kwin.Scripting", "unloadScript") => {
+                self.state.lock().unwrap().finished_focus_checks += 1;
                 self.bus.reply(call, vec![Value::Bool(true)])
             }
             ("org.freedesktop.Notifications", "Notify") => {
@@ -1413,6 +1472,7 @@ fn verified_focus_pastes_with_ctrl_v_and_restores_the_clipboard() {
     desktop.press("dictate");
     sandbox.wait_for_state("recording");
     sandbox.wait_for_recording();
+    desktop.wait_for_focus_check(1);
     desktop.release("dictate");
 
     wait_until("the keys", || desktop.state().keys.len() == 4);
@@ -1420,7 +1480,7 @@ fn verified_focus_pastes_with_ctrl_v_and_restores_the_clipboard() {
         desktop.state().keys,
         [(CONTROL_L, 1), (KEY_V, 1), (KEY_V, 0), (CONTROL_L, 0)]
     );
-    // Focus was checked three times: when dictation ended, and twice before keys.
+    // Focus was checked three times: when dictation began, and twice before keys.
     assert_eq!(desktop.state().focus_checks, 3);
     let copy_args = fs::read_to_string(sandbox.root.join("copy-args")).unwrap();
     assert!(copy_args.len() > 1);
@@ -1441,6 +1501,7 @@ fn terminals_get_ctrl_shift_v() {
     wait_for_paste_session(&desktop, &sandbox);
     sandbox.ok(&["press"]);
     sandbox.wait_for_recording();
+    desktop.wait_for_focus_check(1);
     sandbox.ok(&["release"]);
     wait_until("the keys", || desktop.state().keys.len() == 6);
     assert_eq!(
@@ -1471,10 +1532,84 @@ fn switching_windows_during_transcription_never_sends_keys() {
     wait_for_paste_session(&desktop, &sandbox);
     sandbox.ok(&["press"]);
     sandbox.wait_for_recording();
+    desktop.wait_for_focus_check(1);
     sandbox.ok(&["release"]);
 
     sandbox.wait_for_clipboard(TRANSCRIPT);
     sandbox.wait_for_state("idle");
+    thread::sleep(Duration::from_millis(300));
+    assert!(
+        desktop.state().keys.is_empty(),
+        "keys reached the wrong window"
+    );
+    assert_eq!(sandbox.clipboard().as_deref(), Some(TRANSCRIPT));
+}
+
+#[test]
+fn a_focus_answer_that_comes_after_the_release_is_never_the_target() {
+    let Some((mut sandbox, desktop)) = plasma_sandbox() else {
+        return;
+    };
+    grant_paste(&sandbox);
+    sandbox.start_daemon(&[]);
+    desktop.wait_for_shortcuts(&sandbox);
+    wait_for_paste_session(&desktop, &sandbox);
+    desktop.state().hold_focus = true;
+
+    desktop.press("dictate");
+    sandbox.wait_for_state("recording");
+    sandbox.wait_for_recording();
+    desktop.wait_for_held_focus_checks(1);
+    desktop.release("dictate");
+    wait_until("the recording to end", || sandbox.state() != "recording");
+
+    // KWin finally answers, by which time the user has moved on. Every check
+    // from here on would agree that this window is the one, so only the timing
+    // of the first answer stands between the transcript and the wrong window.
+    desktop.focus_on("{window-b}", "firefox");
+    desktop.state().hold_focus = false;
+    sandbox.wait_for_clipboard(TRANSCRIPT);
+    sandbox.wait_for_state("idle");
+    desktop.wait_for_focus_check(1);
+    thread::sleep(Duration::from_millis(300));
+    assert!(
+        desktop.state().keys.is_empty(),
+        "keys reached the wrong window"
+    );
+    assert_eq!(sandbox.clipboard().as_deref(), Some(TRANSCRIPT));
+    assert_eq!(desktop.state().focus_checks, 1, "nothing to verify later");
+}
+
+#[test]
+fn a_focus_answer_from_a_cancelled_recording_is_not_used() {
+    let Some((mut sandbox, desktop)) = plasma_sandbox() else {
+        return;
+    };
+    grant_paste(&sandbox);
+    sandbox.start_daemon(&[]);
+    wait_for_paste_session(&desktop, &sandbox);
+    desktop.state().hold_focus = true;
+
+    sandbox.ok(&["press"]);
+    desktop.wait_for_held_focus_checks(1);
+    sandbox.ok(&["cancel"]);
+    sandbox.wait_for_state("idle");
+    fs::remove_file(sandbox.root.join("recorder.pid")).unwrap();
+
+    sandbox.ok(&["press"]);
+    sandbox.wait_for_recording();
+    desktop.wait_for_held_focus_checks(2);
+
+    // Only the cancelled recording's check is answered before this one ends.
+    desktop.focus_on("{window-b}", "firefox");
+    desktop.state().let_through = 1;
+    desktop.wait_for_focus_check(1);
+    sandbox.ok(&["release"]);
+    desktop.state().hold_focus = false;
+
+    sandbox.wait_for_clipboard(TRANSCRIPT);
+    sandbox.wait_for_state("idle");
+    desktop.wait_for_focus_check(2);
     thread::sleep(Duration::from_millis(300));
     assert!(
         desktop.state().keys.is_empty(),
@@ -1512,6 +1647,7 @@ fn paste_setup_is_what_grants_access_and_a_refusal_stays_copy_only() {
 
     sandbox.ok(&["press"]);
     sandbox.wait_for_recording();
+    desktop.wait_for_focus_check(1);
     sandbox.ok(&["release"]);
     wait_until("the keys", || desktop.state().keys.len() == 4);
 }

@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 pub const EXIT_ALREADY_RUNNING: i32 = 4;
@@ -66,12 +66,21 @@ enum JobResult {
     Delivered(Delivery),
 }
 
+/// A recording in progress.
+struct ActiveRecording {
+    recording: Recording,
+    /// Answers once with the window that had focus as recording began. It goes
+    /// when the recording does, so no late answer can reach a later recording.
+    focus: Option<Receiver<FocusInfo>>,
+}
+
 struct Job {
     id: u64,
     recording: Recording,
     config: Arc<Config>,
     cancel: Arc<AtomicBool>,
-    focus: Option<JoinHandle<Option<FocusInfo>>>,
+    /// The only window this dictation may be pasted into.
+    target: Option<FocusInfo>,
 }
 
 pub fn run(options: Options) -> i32 {
@@ -255,7 +264,7 @@ struct Daemon {
     desktop: SessionKind,
     runtime: PathBuf,
     session: Session,
-    recording: Option<Recording>,
+    recording: Option<ActiveRecording>,
     /// Finding a recorder runs a tool, so it is only done once per config.
     plan: Option<RecorderPlan>,
     feedback: Feedback,
@@ -317,7 +326,11 @@ impl Daemon {
         };
         let input = if elapsed >= Duration::from_secs(self.config.max_recording_secs) {
             Input::MaxDuration
-        } else if self.recording.as_ref().is_some_and(Recording::input_closed) {
+        } else if self
+            .recording
+            .as_ref()
+            .is_some_and(|active| active.recording.input_closed())
+        {
             Input::RecorderClosed
         } else {
             return;
@@ -372,7 +385,8 @@ impl Daemon {
     fn begin(&mut self, mode: Mode) -> Result<String, String> {
         match self.open_recorder() {
             Ok(recording) => {
-                self.recording = Some(recording);
+                let focus = self.ask_for_focus();
+                self.recording = Some(ActiveRecording { recording, focus });
                 self.last_error = None;
                 self.cue(Cue::Start);
                 let locked = mode == Mode::Locked;
@@ -416,9 +430,16 @@ impl Daemon {
     }
 
     fn finish(&mut self, held: Duration, input: Input) -> Result<String, String> {
-        let Some(mut recording) = self.recording.take() else {
+        let Some(ActiveRecording {
+            mut recording,
+            focus,
+        }) = self.recording.take()
+        else {
             return Ok("Nothing to do".to_string());
         };
+        // Only an answer that's already here counts. One that comes later could
+        // describe a window the user moved to after they stopped talking.
+        let target = focus.and_then(|answer| answer.try_recv().ok());
         let verdict = classify(
             held,
             recording.peak(),
@@ -447,18 +468,17 @@ impl Daemon {
                 // The microphone goes off at once, however long the backend takes.
                 recording.request_stop();
                 self.cue(Cue::Stop);
-                self.enqueue(recording);
+                self.enqueue(recording, target);
                 Ok("Transcribing".to_string())
             }
         }
     }
 
-    fn enqueue(&mut self, recording: Recording) {
+    fn enqueue(&mut self, recording: Recording, target: Option<FocusInfo>) {
         let id = self.next_job;
         self.next_job += 1;
         let cancel = Arc::new(AtomicBool::new(false));
         self.in_flight.push((id, Arc::clone(&cancel)));
-        let focus = self.capture_focus();
         self.note(Note::Transcribing(
             match self.config.backend {
                 Backend::Local => "Transcribing",
@@ -471,7 +491,7 @@ impl Daemon {
             recording,
             config: Arc::clone(&self.config),
             cancel,
-            focus,
+            target,
         };
         if self.jobs.send(job).is_err() {
             self.in_flight.retain(|(job_id, _)| *job_id != id);
@@ -479,9 +499,9 @@ impl Daemon {
         }
     }
 
-    /// Remembers which window dictation was for. On its own thread, since asking
-    /// KWin must not delay anything.
-    fn capture_focus(&self) -> Option<JoinHandle<Option<FocusInfo>>> {
+    /// Starts finding out which window this recording is for. On its own thread,
+    /// since asking KWin must not delay anything.
+    fn ask_for_focus(&self) -> Option<Receiver<FocusInfo>> {
         if self.config.paste != PasteMode::Auto {
             return None;
         }
@@ -489,9 +509,13 @@ impl Daemon {
         if !injector.ready() {
             return None;
         }
-        Some(thread::spawn(move || {
-            injector.current_focus().ok().flatten()
-        }))
+        let (answer, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            if let Ok(Some(focus)) = injector.current_focus() {
+                let _ = answer.send(focus);
+            }
+        });
+        Some(receiver)
     }
 
     /// Shows a note unless more important work is still on screen.
@@ -604,7 +628,7 @@ impl Daemon {
             "message": message,
             "state": state,
             "elapsed_ms": self.session.elapsed(now).map(|e| e.as_millis() as u64),
-            "level": self.recording.as_ref().map(Recording::level),
+            "level": self.recording.as_ref().map(|active| active.recording.level()),
             "transcribing": self.in_flight.len(),
             "backend": self.config.backend.as_str(),
             "session": self.desktop.describe(),
@@ -739,7 +763,7 @@ impl Worker {
             recording,
             config,
             cancel,
-            focus,
+            target,
         } = job;
         let captured = recording.finish();
         if cancel.load(Ordering::SeqCst) {
@@ -775,7 +799,6 @@ impl Worker {
             return JobResult::Cancelled;
         }
 
-        let target = focus.and_then(|handle| handle.join().ok()).flatten();
         let clipboard = ToolClipboard::detect(&self.desktop, &self.tools);
         let clipboard: Result<&dyn Clipboard, String> = match &clipboard {
             Ok(clipboard) => Ok(clipboard),
