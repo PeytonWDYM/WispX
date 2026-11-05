@@ -8,7 +8,10 @@ using static WispX.Native;
 
 namespace WispX
 {
-    /// <summary>Immutable modifiers and optional main key; multiple modifiers match either side.</summary>
+    /// <summary>
+    /// Immutable modifiers and an optional main key. Modifiers match either side, except a lone
+    /// modifier with no main key (Right Ctrl / Right Alt), which is side-specific.
+    /// </summary>
     [JsonConverter(typeof(HotkeyConverter))]
     internal sealed class Hotkey
     {
@@ -20,7 +23,8 @@ namespace WispX
         public int? MainKey { get; }
         public bool IsValid => MainKey is int key ? key is not (VK_ESCAPE or VK_SPACE) && (_modifiers.Length > 0 || key is >= VK_F1 and <= VK_F24) :
             _modifiers.Length >= 2 || _modifiers.Length == 1 && _modifiers[0] is VK_RCONTROL or VK_RMENU;
-        public string Display => string.Join(" + ", _keys.Select(k => IsModifier(k) ? Name(k, _modifiers.Length == 1) : KeyName(k)));
+        public string Display => string.Join(" + ", _keys.Select(k => IsModifier(k) ? Name(k, Sided) : KeyName(k)));
+        private bool Sided => MainKey == null && _modifiers.Length == 1;
         public bool MasksMenu => _modifiers.Any(k => Group(k) is 1 or 2);
 
         public Hotkey(params int[] keys)
@@ -28,13 +32,13 @@ namespace WispX
             int[] main = keys.Where(k => !IsModifier(k)).Distinct().ToArray();
             if (keys.Length == 0 || main.Length > 1 || keys.Any(k => k is < 1 or > 255)) throw new ArgumentException("Use modifiers and at most one main key.", nameof(keys));
             _modifiers = keys.Where(IsModifier).Distinct().OrderBy(Group).ThenBy(k => k).ToArray();
-            if (_modifiers.Length > 1) _modifiers = _modifiers.GroupBy(Group).Select(g => Modifiers[g.Key * 2]).ToArray();
             MainKey = main.Length == 1 ? main[0] : null;
+            if (!Sided) _modifiers = _modifiers.GroupBy(Group).Select(g => Modifiers[g.Key * 2]).ToArray();
             _keys = _modifiers.Concat(main).ToArray();
         }
 
-        public bool Matches(IReadOnlySet<int> held) => _modifiers.Length == 1 ? held.Contains(_modifiers[0]) : _modifiers.All(k => held.Any(h => Group(h) == Group(k)));
-        public bool HasExtraModifiers(IReadOnlySet<int> held) => held.Any(h => _modifiers.Length == 1 ? h != _modifiers[0] : !_modifiers.Any(k => Group(h) == Group(k)));
+        public bool Matches(IReadOnlySet<int> held) => Sided ? held.Contains(_modifiers[0]) : _modifiers.All(k => held.Any(h => Group(h) == Group(k)));
+        public bool HasExtraModifiers(IReadOnlySet<int> held) => held.Any(h => Sided ? h != _modifiers[0] : !_modifiers.Any(k => Group(h) == Group(k)));
         internal static bool IsModifier(int key) => Modifiers.Contains(key);
         private static int Group(int key) => Array.IndexOf(Modifiers, key) / 2;
         private static string Name(int key, bool sided) => (sided && key is VK_RCONTROL or VK_RWIN or VK_RMENU or VK_RSHIFT ? "Right " : "") +
