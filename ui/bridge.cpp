@@ -30,11 +30,11 @@
 
 #include <wayland-client.h>
 
-#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <future>
 #include <memory>
+#include <mutex>
 
 namespace {
 
@@ -464,12 +464,16 @@ private:
 namespace {
 
 // Calls can arrive from Rust's threads at any time, including while quitting.
-std::atomic<Bridge *> g_bridge{nullptr};
+// Keep the receiver alive until invokeMethod has finished queuing the call.
+// Qt discards queued calls when their receiver is destroyed.
+std::mutex g_bridgeMutex;
+Bridge *g_bridge = nullptr;
 
 template <typename Function>
 void post(Function function)
 {
-    Bridge *bridge = g_bridge.load();
+    const std::lock_guard<std::mutex> guard(g_bridgeMutex);
+    Bridge *bridge = g_bridge;
     if (bridge) {
         QMetaObject::invokeMethod(bridge, [bridge, function] { function(bridge); },
                                   Qt::QueuedConnection);
@@ -503,10 +507,16 @@ extern "C" int wispx_ui_run(const wispx_ui_params *params)
     int result = 0;
     {
         Bridge bridge(*params);
-        g_bridge.store(&bridge);
+        {
+            const std::lock_guard<std::mutex> guard(g_bridgeMutex);
+            g_bridge = &bridge;
+        }
         QTimer::singleShot(0, &bridge, [&bridge] { bridge.start(); });
         result = QApplication::exec();
-        g_bridge.store(nullptr);
+        {
+            const std::lock_guard<std::mutex> guard(g_bridgeMutex);
+            g_bridge = nullptr;
+        }
     }
     return result;
 }
