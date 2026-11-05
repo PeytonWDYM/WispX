@@ -1,0 +1,15 @@
+# `wispx setup` writes this for you, with the full path of the program.
+#
+# Portals identify a program by this file's name, so it has to stay
+# io.github.PeytonWDYM.WispX.desktop. Copy it to one of these by hand if you prefer:
+#   ~/.local/share/applications/   so the desktop can name WispX in its dialogs
+#   ~/.config/autostart/           to also start WispX when you log in
+[Desktop Entry]
+Type=Application
+Name=WispX
+Comment=Hold a key, speak, and your words appear
+Exec=wispx daemon --quiet
+Icon=audio-input-microphone
+Terminal=false
+NoDisplay=true
+Categories=Utility;Accessibility;

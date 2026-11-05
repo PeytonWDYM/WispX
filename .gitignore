@@ -1,3 +1,7 @@
+# Rust
+target/
+
+# Windows build (windows/)
 bin/
 obj/
 .vs/
