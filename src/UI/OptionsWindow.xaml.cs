@@ -44,17 +44,21 @@ namespace WispX
             PageShift.BeginAnimation(TranslateTransform.YProperty, OptionsMotion.To(12, 0, 220));
         }
 
+        /// <summary>Switch pages before focused controls and WPF tab navigation consume Ctrl+Tab.</summary>
+        private void WindowPreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Tab || !Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) return;
+            int step = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? -1 : 1;
+            SelectPage((Navigation.SelectedIndex + step + _pages.Length) % _pages.Length); e.Handled = true;
+        }
+
+        /// <summary>Let focused controls such as an open ComboBox handle Escape before the window.</summary>
         private void WindowKeyDown(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.Escape)
             {
                 if (_shortcut.IsCapturing) _shortcut.CancelCapture(); else Close();
                 e.Handled = true;
-            }
-            else if (e.Key == Key.Tab && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
-            {
-                int step = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? -1 : 1;
-                SelectPage((Navigation.SelectedIndex + step + 4) % 4); e.Handled = true;
             }
         }
     }
