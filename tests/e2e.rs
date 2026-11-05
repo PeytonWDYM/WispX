@@ -48,7 +48,7 @@ fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
 }
 
 /// Coreutils a fake tool may need; they are all it can see.
-const UTILITIES: [&str; 5] = ["cat", "cp", "sleep", "stat", "touch"];
+const UTILITIES: [&str; 6] = ["cat", "cp", "mv", "sleep", "stat", "touch"];
 
 fn write_script(path: &Path, body: &str) {
     fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -99,12 +99,15 @@ impl Sandbox {
         };
         sandbox.recorder("loud.raw");
         sandbox.whisper_says(TRANSCRIPT);
+        // Changes in one step, as the real clipboard does, so that a test reading it
+        // while the text is being copied again never finds it half written.
         sandbox.tool(
             "wl-copy",
             &format!(
                 r#"[ "$1" = --help ] && {{ echo '--sensitive'; exit 0; }}
 printf '%s\n' "$@" > {r}/copy-args
-cat > {r}/clipboard
+cat > {r}/clipboard.$$
+mv {r}/clipboard.$$ {r}/clipboard
 echo x >> {r}/copy-count"#,
                 r = sandbox.root.display()
             ),
@@ -366,7 +369,14 @@ impl Drop for Sandbox {
             let _ = child.kill();
             let _ = child.wait();
         }
-        let _ = fs::remove_dir_all(&self.root);
+        // A tool the daemon started may still be finishing, and can add a file
+        // while this runs. Once the directory is gone, it can't come back.
+        for _ in 0..50 {
+            if fs::remove_dir_all(&self.root).is_ok() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 }
 
