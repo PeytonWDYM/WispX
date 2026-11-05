@@ -109,6 +109,8 @@ pub struct Config {
     /// ISO language hint such as "en". Empty or "auto" means auto-detect.
     pub language: String,
     pub sounds: bool,
+    /// Whether the small pill stays on screen between dictations.
+    pub idle_pill: bool,
     pub notifications: NotifyLevel,
     pub hotkey: HotkeyMode,
     pub shortcuts: ShortcutsConfig,
@@ -129,6 +131,7 @@ impl Config {
             backend: Backend::Local,
             language: String::new(),
             sounds: true,
+            idle_pill: true,
             notifications: NotifyLevel::All,
             hotkey: HotkeyMode::Auto,
             shortcuts: ShortcutsConfig {
@@ -184,6 +187,9 @@ impl Config {
         }
         if let Some(v) = root.boolean("sounds")? {
             config.sounds = v;
+        }
+        if let Some(v) = root.boolean("idle_pill")? {
+            config.idle_pill = v;
         }
         if let Some(v) = root.choice("notifications", NotifyLevel::parse, NotifyLevel::CHOICES)? {
             config.notifications = v;
@@ -282,6 +288,7 @@ impl Config {
             "backend": self.backend.as_str(),
             "language": self.language,
             "sounds": self.sounds,
+            "idle_pill": self.idle_pill,
             "notifications": self.notifications.as_str(),
             "hotkey": self.hotkey.as_str(),
             "shortcuts": {
@@ -327,6 +334,35 @@ pub struct Overrides {
 }
 
 impl Overrides {
+    /// Forgets what the command line said about anything `patch` sets. Once the
+    /// file has been changed on purpose it has the final say, so a later reload
+    /// must not bring the startup value back.
+    pub fn forget(&mut self, patch: &Value) {
+        let has = |key: &str| patch.get(key).is_some();
+        let has_whisper = |key: &str| patch.get("whisper").and_then(|w| w.get(key)).is_some();
+        if has("backend") {
+            self.backend = None;
+        }
+        if has("language") {
+            self.language = None;
+        }
+        if has_whisper("model") {
+            self.model = None;
+        }
+        if has_whisper("binary") {
+            self.whisper_bin = None;
+        }
+        if has_whisper("threads") {
+            self.threads = None;
+        }
+        if has("hotkey") {
+            self.hotkey = None;
+        }
+        if has("paste") {
+            self.paste = None;
+        }
+    }
+
     pub fn apply(&self, config: &mut Config) -> Result<(), String> {
         if let Some(v) = self.backend {
             config.backend = v;
@@ -356,17 +392,34 @@ impl Overrides {
 
 /// Changes only `backend` in the file, keeping every other key the user set.
 pub fn persist_backend(path: &Path, backend: Backend) -> Result<(), String> {
+    persist_patch(path, &json!({ "backend": backend.as_str() }))
+}
+
+/// Merges `patch` into the file, keeping every other key the user set. Nothing is
+/// written unless the existing file is valid and the result would load too.
+pub fn persist_patch(path: &Path, patch: &Value) -> Result<(), String> {
     let mut root = match fs::read_to_string(path) {
         Ok(text) => {
-            // Refuse to rewrite a file that would not load anyway.
             Config::parse(&text).map_err(|error| format!("{}: {error}", path.display()))?;
             serde_json::from_str::<Value>(&text).map_err(|e| e.to_string())?
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => json!({}),
         Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
     };
-    root["backend"] = json!(backend.as_str());
+    merge(&mut root, patch);
+    Config::parse(&root.to_string())?;
     write_json(path, &root)
+}
+
+fn merge(target: &mut Value, patch: &Value) {
+    match (target.as_object_mut(), patch.as_object()) {
+        (Some(target), Some(patch)) => {
+            for (key, value) in patch {
+                merge(target.entry(key.as_str()).or_insert(Value::Null), value);
+            }
+        }
+        _ => *target = patch.clone(),
+    }
 }
 
 /// Writes the defaults, never replacing an existing file.
@@ -584,6 +637,7 @@ mod tests {
             "backend": "chatgpt",
             "language": "de",
             "sounds": false,
+            "idle_pill": false,
             "notifications": "errors",
             "hotkey": "portal",
             "shortcuts": {
@@ -710,6 +764,57 @@ mod tests {
         fs::write(&path, "{broken").unwrap();
         assert!(persist_backend(&path, Backend::Local).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "{broken");
+    }
+
+    #[test]
+    fn a_patch_merges_nested_sections_and_is_validated_before_writing() {
+        let temp = TempDir::new();
+        let path = temp.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{"language":"de","whisper":{"threads":2},"audio":{"device":"mic-1"}}"#,
+        )
+        .unwrap();
+        persist_patch(
+            &path,
+            &json!({"whisper":{"model":"/m/ggml.bin"},"audio":{"device":null},"idle_pill":false}),
+        )
+        .unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.language, "de");
+        assert_eq!(config.whisper.threads, 2);
+        assert_eq!(config.whisper.model, PathBuf::from("/m/ggml.bin"));
+        assert_eq!(config.audio.device, None);
+        assert!(!config.idle_pill);
+
+        let before = fs::read_to_string(&path).unwrap();
+        for bad in [
+            json!({"backnd":"local"}),
+            json!({"whisper":{"model":"relative.bin"}}),
+            json!({"whisper":"x"}),
+        ] {
+            assert!(persist_patch(&path, &bad).is_err(), "{bad}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        }
+        fs::write(&path, "{broken").unwrap();
+        assert!(persist_patch(&path, &json!({"sounds":false})).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{broken");
+    }
+
+    #[test]
+    fn a_patch_forgets_only_the_command_line_values_it_sets() {
+        let mut overrides = Overrides {
+            backend: Some(Backend::ChatGpt),
+            language: Some("fr".into()),
+            model: Some("/m.bin".into()),
+            paste: Some(PasteMode::Copy),
+            ..Overrides::default()
+        };
+        overrides.forget(&json!({"whisper":{"model":"/n.bin"},"language":"en"}));
+        assert_eq!(overrides.backend, Some(Backend::ChatGpt));
+        assert_eq!(overrides.paste, Some(PasteMode::Copy));
+        assert_eq!(overrides.language, None);
+        assert_eq!(overrides.model, None);
     }
 
     #[test]

@@ -33,6 +33,7 @@ const UNTIL_REPLACED_MS: i32 = 30 * 60 * 1000;
 pub enum Note {
     Recording { locked: bool },
     Transcribing(String),
+    Pasted,
     Done(String),
     Warn(String),
     Error(String),
@@ -56,6 +57,7 @@ impl Note {
                 Some(("Recording hands-free", "", UNTIL_REPLACED_MS))
             }
             Note::Transcribing(text) => Some((text, "", UNTIL_REPLACED_MS)),
+            Note::Pasted => Some(("Pasted", "", 2500)),
             Note::Done(text) => Some((text, "", 2500)),
             Note::Warn(text) => Some(("WispX", text, 5000)),
             Note::Error(text) => Some(("WispX problem", text, 10000)),

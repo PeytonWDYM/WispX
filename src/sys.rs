@@ -1,13 +1,17 @@
-//! The only `unsafe` in WispX: two libc calls that std does not expose.
+//! The `unsafe` of the program itself: libc calls that std does not expose. (The
+//! only other `unsafe` is the Qt bridge, in `src/bin/wispx-gui.rs`.)
 //!
 //! std can deliver neither SIGTERM (only SIGKILL through `Child::kill`) nor
 //! install a signal handler. We need both so recorders can flush their last
 //! buffer and so a terminated daemon removes its socket and private audio.
-//! std already links libc, so declaring these adds no dependency.
+//! `setsid` is what lets the desktop app outlive the terminal it was started
+//! from. std already links libc, so declaring these adds no dependency.
 
 #![allow(unsafe_code)]
 
 use std::io;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const SIGTERM: i32 = 15;
@@ -18,6 +22,7 @@ const SIGINT: i32 = 2;
 unsafe extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
     fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+    fn setsid() -> i32;
 }
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -41,6 +46,25 @@ pub fn install_shutdown_handlers() {
 
 pub fn shutdown_requested() -> bool {
     SHUTDOWN.load(Ordering::SeqCst)
+}
+
+/// Asks the threads that poll `shutdown_requested` to wind down, as a signal would.
+pub fn request_shutdown() {
+    SHUTDOWN.store(true, Ordering::SeqCst);
+}
+
+/// Starts `command` in a session of its own, so closing the terminal that started
+/// this program does not reach it.
+pub fn detach(command: &mut Command) {
+    // SAFETY: `setsid` is async-signal-safe, touches no memory, and may run
+    // between fork and exec. Failing means already being a session leader, which
+    // is just as detached.
+    unsafe {
+        command.pre_exec(|| {
+            setsid();
+            Ok(())
+        });
+    }
 }
 
 /// Sends `sig` to the process group led by `pid`, reaching wrapper scripts'

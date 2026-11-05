@@ -13,6 +13,27 @@ publish = false
 [dependencies]
 serde_json = { version = "1", default-features = false, features = ["std"] }
 
+# The desktop interface is a second program, so the command line and the daemon
+# load no Qt and keep working even if Qt breaks. Without this feature only
+# `wispx` is built, which needs no native libraries at all.
+[features]
+default = ["gui"]
+gui = []
+
+[[bin]]
+name = "wispx"
+path = "src/main.rs"
+
+[[bin]]
+name = "wispx-gui"
+path = "src/bin/wispx-gui.rs"
+required-features = ["gui"]
+
+[[test]]
+name = "gui_nested"
+path = "tests/gui_nested.rs"
+required-features = ["gui"]
+
 [profile.release]
 lto = true
 codegen-units = 1

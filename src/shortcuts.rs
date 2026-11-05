@@ -214,6 +214,9 @@ fn listen(
             if message.is_signal(portal::SESSION_INTERFACE, "Closed") {
                 return Err(Stop::Lost("the portal closed the session".to_string()));
             }
+            if let Some(status) = changed_triggers(&message, &session) {
+                sink(Event::Status(status));
+            }
             if let Some(input) = handle_signal(&message, &session, translator, now) {
                 sink(Event::Input(input));
             }
@@ -297,11 +300,49 @@ fn bind(bus: &mut Connection, session: &str, config: &ShortcutsConfig) -> Result
     })
 }
 
+/// The user changed the keys in System Settings. What the interface shows must
+/// follow, since it promises the keys that really work.
+fn changed_triggers(message: &Message, session: &str) -> Option<Status> {
+    if !message.is_signal(INTERFACE, "ShortcutsChanged")
+        || message.body.first()?.as_str()? != session
+    {
+        return None;
+    }
+    let Value::Array { items, .. } = message.body.get(1)? else {
+        return None;
+    };
+    Some(Status::Bound(describe_list(items)))
+}
+
 /// "hands-free: Meta+Ctrl+Space, ..." from a `BindShortcuts` result.
 fn describe_triggers(results: &Value) -> String {
     let Some(Value::Array { items, .. }) = results.lookup("shortcuts") else {
         return "bound".to_string();
     };
+    describe_list(items)
+}
+
+/// Splits [`Status::Bound`]'s text back up. A trigger's description can itself
+/// contain a comma, so only a known shortcut name starts a new entry.
+pub fn parse_triggers(text: &str) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for part in text.split(", ") {
+        match part.split_once(": ") {
+            Some((id, trigger)) if [HOLD, HANDS_FREE, CANCEL].contains(&id) => {
+                found.push((id.to_string(), trigger.to_string()));
+            }
+            _ => {
+                if let Some((_, trigger)) = found.last_mut() {
+                    trigger.push_str(", ");
+                    trigger.push_str(part);
+                }
+            }
+        }
+    }
+    found
+}
+
+fn describe_list(items: &[Value]) -> String {
     let mut parts: Vec<String> = items
         .iter()
         .filter_map(|item| {
@@ -351,6 +392,49 @@ fn handle_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trigger_text_comes_apart_again_even_with_a_comma_in_a_key() {
+        assert_eq!(
+            parse_triggers(
+                "cancel: Meta+Ctrl+Backspace, dictate: Meta+,, hands-free: not assigned"
+            ),
+            vec![
+                ("cancel".to_string(), "Meta+Ctrl+Backspace".to_string()),
+                ("dictate".to_string(), "Meta+,".to_string()),
+                ("hands-free".to_string(), "not assigned".to_string()),
+            ]
+        );
+        assert!(parse_triggers("bound").is_empty());
+    }
+
+    #[test]
+    fn a_changed_key_updates_the_status_for_this_session_only() {
+        let changed = |path: &str| {
+            Message::for_tests(
+                INTERFACE,
+                "ShortcutsChanged",
+                vec![
+                    Value::path(path),
+                    Value::Array {
+                        element: "(sa{sv})".to_string(),
+                        items: vec![Value::Struct(vec![
+                            Value::str(HOLD),
+                            Value::vardict(vec![(
+                                "trigger_description".to_string(),
+                                Value::str("Meta+Alt+H"),
+                            )]),
+                        ])],
+                    },
+                ],
+            )
+        };
+        assert_eq!(
+            changed_triggers(&changed("/s/mine"), "/s/mine"),
+            Some(Status::Bound("dictate: Meta+Alt+H".to_string()))
+        );
+        assert_eq!(changed_triggers(&changed("/s/other"), "/s/mine"), None);
+    }
 
     #[test]
     fn retries_slow_down_until_a_session_has_worked() {
