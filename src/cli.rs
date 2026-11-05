@@ -51,7 +51,8 @@ CONTROLLING THE DAEMON
     status [--json]   Show what WispX is doing
     last              Print the last transcript
     copy-last         Copy the last transcript again
-    backend [NAME]    Show or change the backend: local or chatgpt
+    backend [NAME]    Show or change the backend: local or chatgpt. A running
+                      daemon's backend and config file are the ones that count
     reload            Re-read the config file
     quit              Stop the daemon
 
@@ -65,7 +66,7 @@ ONE-OFF
 
 CONFIG
     config path       Print where the config file is
-    config show       Print the settings in effect
+    config show       Print the settings from the config file
     config init       Write a config file with the defaults
 
 OTHER
@@ -357,6 +358,7 @@ pub fn main() -> i32 {
             return EXIT_USAGE;
         }
     };
+    let explicit_config = parsed.config.is_some();
     let config_path = match parsed.config.map_or_else(paths::default_config_file, Ok) {
         Ok(path) => path,
         Err(error) => {
@@ -364,10 +366,10 @@ pub fn main() -> i32 {
             return EXIT_FAILED;
         }
     };
-    execute(parsed.command, config_path)
+    execute(parsed.command, config_path, explicit_config)
 }
 
-fn execute(command: Command, config_path: PathBuf) -> i32 {
+fn execute(command: Command, config_path: PathBuf, explicit_config: bool) -> i32 {
     match command {
         Command::Help => {
             print!("{HELP}");
@@ -385,7 +387,10 @@ fn execute(command: Command, config_path: PathBuf) -> i32 {
         Command::Control(request) => control(request),
         Command::Status { json } => status(json),
         Command::Last => last(),
-        Command::Backend(backend) => backend_command(&config_path, backend),
+        Command::Backend(backend) => report(match backend {
+            Some(backend) => set_backend(&config_path, explicit_config, backend),
+            None => show_backend(&config_path, explicit_config),
+        }),
         Command::Transcribe { file, overrides } => transcribe_file(&config_path, &file, &overrides),
         Command::Doctor { overrides } => doctor::run(&config_path, &overrides),
         Command::ConfigPath => {
@@ -460,6 +465,7 @@ fn status(json: bool) -> i32 {
     let text = |key: &str| reply[key].as_str().unwrap_or("unknown");
     println!("state:     {}", text("state"));
     println!("backend:   {}", text("backend"));
+    println!("config:    {}", text("config"));
     println!("session:   {}", text("session"));
     println!("shortcuts: {}", text("hotkey"));
     println!("delivery:  {}", text("paste"));
@@ -486,42 +492,82 @@ fn last() -> i32 {
     }
 }
 
-fn backend_command(config_path: &Path, backend: Option<Backend>) -> i32 {
-    let Some(backend) = backend else {
-        return match Config::load(config_path) {
-            Ok(config) => {
-                println!("{}", config.backend.as_str());
-                EXIT_OK
-            }
-            Err(error) => {
-                eprintln!("wispx: {error}");
-                EXIT_FAILED
-            }
-        };
-    };
-    if let Err(error) = config::persist_backend(config_path, backend) {
-        eprintln!("wispx: {error}");
-        return EXIT_FAILED;
-    }
-    println!("Backend: {}", backend.as_str());
-    if backend == Backend::ChatGpt {
-        println!("Your audio will now be sent to chatgpt.com when you dictate.");
-    }
-    // A running daemon has to pick the change up as well.
-    match ipc::send(&paths::client_socket_path(), Request::SetBackend(backend)) {
-        Ok(reply) if reply["ok"] == true => EXIT_OK,
-        Ok(reply) => {
-            eprintln!(
-                "wispx: the running daemon kept its settings: {}",
-                message_of(&reply)
-            );
-            EXIT_FAILED
-        }
-        Err(ClientError::NotRunning) => EXIT_OK,
+/// The status of the running daemon, if there is one. While it runs, the backend
+/// it is using and the file it was started with are the ones that count, whatever
+/// the default file says. Naming some other file is refused rather than guessed
+/// at: it would change nothing the daemon does.
+fn running_daemon(config_path: &Path, explicit_config: bool) -> Result<Option<Value>, String> {
+    let status = match ipc::send(&paths::client_socket_path(), Request::Status) {
+        Ok(status) => status,
+        Err(ClientError::NotRunning) => return Ok(None),
         Err(ClientError::Failed(error)) => {
-            eprintln!("wispx: the running daemon kept its settings: {error}");
-            EXIT_FAILED
+            return Err(format!("cannot ask the daemon what it is using: {error}"));
         }
+    };
+    if status["ok"] != true {
+        return Err(message_of(&status).to_string());
+    }
+    if explicit_config {
+        let in_use = status["config"].as_str().unwrap_or("an unknown file");
+        if !paths::same_file(Path::new(in_use), config_path) {
+            return Err(format!(
+                "the running daemon uses {in_use}, not {}, so nothing changed. Leave out \
+                 --config to work with the daemon, or stop it with `wispx quit` to work with \
+                 that file",
+                config_path.display()
+            ));
+        }
+    }
+    Ok(Some(status))
+}
+
+fn show_backend(config_path: &Path, explicit_config: bool) -> Result<String, String> {
+    match running_daemon(config_path, explicit_config)? {
+        Some(status) => status["backend"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "the daemon did not say which backend it is using".to_string()),
+        None => Ok(Config::load(config_path)?.backend.as_str().to_string()),
+    }
+}
+
+fn set_backend(
+    config_path: &Path,
+    explicit_config: bool,
+    backend: Backend,
+) -> Result<String, String> {
+    let mut message = if running_daemon(config_path, explicit_config)?.is_some() {
+        set_daemon_backend(backend)?
+    } else {
+        config::persist_backend(config_path, backend)?;
+        // A daemon starting right now may have read the file just before that.
+        if running_daemon(config_path, explicit_config)?.is_some() {
+            set_daemon_backend(backend)?
+        } else {
+            format!(
+                "Backend: {}\nSaved in {}",
+                backend.as_str(),
+                config_path.display()
+            )
+        }
+    };
+    if backend == Backend::ChatGpt {
+        message.push_str("\nYour audio will now be sent to chatgpt.com when you dictate.");
+    }
+    Ok(message)
+}
+
+/// The daemon saves and applies the change together, so success here means both.
+fn set_daemon_backend(backend: Backend) -> Result<String, String> {
+    match ipc::send(&paths::client_socket_path(), Request::SetBackend(backend)) {
+        Ok(reply) if reply["ok"] == true => Ok(message_of(&reply).to_string()),
+        Ok(reply) => Err(message_of(&reply).to_string()),
+        Err(ClientError::NotRunning) => {
+            Err("the daemon stopped before it could make the change. Try again".to_string())
+        }
+        Err(ClientError::Failed(error)) => Err(format!(
+            "the daemon did not confirm the change: {error}. Check with `wispx status`"
+        )),
     }
 }
 

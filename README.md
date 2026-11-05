@@ -144,6 +144,13 @@ Before you do:
 - It calls ChatGPT's `/backend-api/transcribe` endpoint. It's not a public API, so it can change or break without warning, and using it may go against OpenAI's terms.
 - WispX only reads `~/.codex/auth.json`. It never refreshes the login or writes to that file, so it can't interfere with Codex. If the login has expired, opening Codex renews it. The Windows app does refresh it, so this is one difference between them.
 
+While the daemon is running, `wispx backend` works on the daemon rather than on a file alone:
+
+- `wispx backend` reports the backend the daemon is actually using, including one chosen with `wispx daemon --backend`.
+- `wispx backend NAME` changes the daemon and the config file it was started with, both or neither. It also replaces a `--backend` start flag until the daemon next starts.
+- `--config` has to name the daemon's own file. Any other file is refused, so run `wispx quit` first to change one.
+- A transcription already under way finishes with the backend it started with. `wispx cancel` stops it.
+
 ## What WispX runs
 
 WispX has one direct Rust dependency, `serde_json`, which brings in 4 more crates. It keeps that small by running the tools your system already has, as separate programs with separate arguments and no shell in between:

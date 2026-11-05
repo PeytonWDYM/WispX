@@ -159,6 +159,20 @@ pub fn current_uid() -> io::Result<u32> {
     fs::metadata("/proc/self").map(|meta| meta.uid())
 }
 
+/// Whether two paths name the same file, which need not exist yet. Symlinks count
+/// as the file they point to, the same as for [`atomic_write`].
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    let resolve = |path: &Path| {
+        fs::canonicalize(path).unwrap_or_else(|_| {
+            match (path.parent().map(fs::canonicalize), path.file_name()) {
+                (Some(Ok(dir)), Some(name)) => dir.join(name),
+                _ => path.to_path_buf(),
+            }
+        })
+    };
+    resolve(a) == resolve(b)
+}
+
 /// Atomically replaces `path`. A symlinked target stays a symlink so dotfile
 /// managers keep working.
 pub fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
@@ -246,6 +260,30 @@ mod tests {
         drop(create_private_file(&path).unwrap());
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
         assert!(create_private_file(&path).is_err());
+    }
+
+    #[test]
+    fn same_file_sees_through_links_and_needs_no_file() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new();
+        let real = temp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let linked = temp.path().join("linked");
+        symlink(&real, &linked).unwrap();
+
+        let file = real.join("a.json");
+        assert!(same_file(&file, &linked.join("a.json")));
+        assert!(same_file(&file, &real.join(".").join("a.json")));
+        assert!(!same_file(&file, &real.join("b.json")));
+        assert!(!same_file(&file, Path::new("/nonexistent/dir/a.json")));
+
+        fs::write(&file, "{}").unwrap();
+        let link = temp.path().join("link.json");
+        symlink(&file, &link).unwrap();
+        assert!(same_file(&file, &link));
+        assert!(same_file(&link, &linked.join("a.json")));
+        assert!(!same_file(&link, &real.join("b.json")));
     }
 
     #[test]

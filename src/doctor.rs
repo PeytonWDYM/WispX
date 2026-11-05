@@ -107,7 +107,16 @@ pub fn run(config_path: &Path, overrides: &Overrides) -> i32 {
     match ipc::send(&paths::client_socket_path(), Request::Status) {
         Ok(reply) => {
             let text = |key: &str| reply[key].as_str().unwrap_or("unknown").to_string();
-            report.line(Level::Ok, "daemon", format!("running, {}", text("state")));
+            report.line(
+                Level::Ok,
+                "daemon",
+                format!(
+                    "running, {}, using the {} backend and {}",
+                    text("state"),
+                    text("backend"),
+                    text("config")
+                ),
+            );
             report.line(Level::Ok, "shortcuts", text("hotkey"));
             report.line(Level::Ok, "delivery", text("paste"));
         }

@@ -166,8 +166,13 @@ exec sleep 60"#
     /// Writes the config, with `extra` top-level settings. Short holds count, so
     /// tests need not wait around, and sounds are off unless a test wants them.
     fn configure(&self, extra: &str) {
+        fs::create_dir_all(self.root.join("config/wispx")).unwrap();
+        fs::write(self.config_file(), self.config_text(extra)).unwrap();
+    }
+
+    fn config_text(&self, extra: &str) -> String {
         let r = self.root.display();
-        let text = format!(
+        format!(
             r#"{{
                 "sounds": false,
                 "notifications": "none",
@@ -177,9 +182,7 @@ exec sleep 60"#
                 "whisper": {{ "binary": "whisper-cli", "model": "{r}/model.bin", "threads": 2 }},
                 {extra}
             }}"#
-        );
-        fs::create_dir_all(self.root.join("config/wispx")).unwrap();
-        fs::write(self.config_file(), text).unwrap();
+        )
     }
 
     fn config_file(&self) -> PathBuf {
@@ -233,9 +236,15 @@ exec sleep 60"#
     }
 
     fn start_daemon(&mut self, args: &[&str]) {
+        self.start_daemon_with(&[], args);
+    }
+
+    /// `global` goes before the command, where `--config` belongs.
+    fn start_daemon_with(&mut self, global: &[&str], args: &[&str]) {
         let log = File::create(self.root.join("daemon.log")).unwrap();
         let child = self
             .command()
+            .args(global)
             .arg("daemon")
             .arg("--quiet")
             .args(args)
@@ -291,6 +300,27 @@ exec sleep 60"#
     fn wait_for_recording(&self) {
         self.pid_of("recorder.pid");
         thread::sleep(Duration::from_millis(150));
+    }
+
+    /// Records and stops, with `wispx press` and `wispx release`.
+    fn dictate(&self) {
+        self.ok(&["press"]);
+        self.wait_for_recording();
+        self.ok(&["release"]);
+    }
+
+    fn saved_backend(&self, path: &Path) -> Json {
+        let config: Json = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        config["backend"].clone()
+    }
+
+    /// A login the fake curl will accept, with no expiry to check.
+    fn sign_in_to_codex(&self) {
+        fs::write(
+            self.root.join("codex/auth.json"),
+            r#"{"tokens":{"access_token":"not-a-real-token"}}"#,
+        )
+        .unwrap();
     }
 
     fn job_files(&self) -> Vec<String> {
@@ -609,6 +639,213 @@ fn a_bad_config_reload_keeps_the_working_settings() {
 
     fs::write(sandbox.config_file(), good).unwrap();
     sandbox.ok(&["reload"]);
+}
+
+#[test]
+fn the_backend_command_works_on_the_config_the_daemon_is_using() {
+    let mut sandbox = Sandbox::new();
+    fs::remove_file(sandbox.config_file()).unwrap();
+    let config = sandbox.root.join("daemon.json");
+    fs::write(
+        &config,
+        sandbox.config_text(r#""paste":"copy","backend":"chatgpt""#),
+    )
+    .unwrap();
+    let path = config.to_str().unwrap();
+    sandbox.sign_in_to_codex();
+    sandbox.start_daemon_with(&["--config", path], &[]);
+
+    assert_eq!(sandbox.ok(&["backend"]).trim(), "chatgpt");
+    assert_eq!(sandbox.ok(&["--config", path, "backend"]).trim(), "chatgpt");
+    assert_eq!(sandbox.status()["config"], path);
+    sandbox.dictate();
+    wait_until("the upload", || sandbox.has("curl-ran"));
+    sandbox.wait_for_state("idle");
+    assert!(!sandbox.has("whisper-args"));
+    fs::remove_file(sandbox.root.join("curl-ran")).unwrap();
+    fs::remove_file(sandbox.root.join("recorder.pid")).unwrap();
+
+    let reply = sandbox.ok(&["backend", "local"]);
+    assert!(reply.starts_with("Backend: local\n"), "{reply}");
+    assert!(reply.contains(path), "{reply}");
+    assert!(!reply.contains("chatgpt.com"), "{reply}");
+    assert_eq!(sandbox.status()["backend"], "local");
+    assert_eq!(sandbox.ok(&["backend"]).trim(), "local");
+    assert_eq!(sandbox.saved_backend(&config), "local");
+    let saved: Json = serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    assert_eq!(saved["min_hold_ms"], 50, "other settings survive");
+    assert!(
+        !sandbox.config_file().exists(),
+        "the default file is none of this command's business"
+    );
+
+    sandbox.dictate();
+    sandbox.wait_for_clipboard(TRANSCRIPT);
+    assert!(!sandbox.has("curl-ran"), "audio left after the switch");
+
+    sandbox.ok(&["quit"]);
+    assert_eq!(sandbox.wait_for_exit(), 0);
+    sandbox.start_daemon_with(&["--config", path], &[]);
+    assert_eq!(sandbox.status()["backend"], "local");
+}
+
+#[test]
+fn a_backend_given_at_startup_is_reported_until_it_is_changed() {
+    let mut sandbox = Sandbox::new();
+    sandbox.start_daemon(&["--backend", "chatgpt"]);
+    assert_eq!(sandbox.ok(&["backend"]).trim(), "chatgpt");
+    assert_eq!(sandbox.saved_backend(&sandbox.config_file()), Json::Null);
+    sandbox.ok(&["reload"]);
+    assert_eq!(sandbox.ok(&["backend"]).trim(), "chatgpt");
+
+    sandbox.ok(&["backend", "local"]);
+    assert_eq!(sandbox.ok(&["backend"]).trim(), "local");
+    assert_eq!(sandbox.saved_backend(&sandbox.config_file()), "local");
+    sandbox.ok(&["reload"]);
+    assert_eq!(sandbox.ok(&["backend"]).trim(), "local");
+}
+
+#[test]
+fn a_config_file_the_daemon_is_not_using_is_refused_and_left_alone() {
+    let mut sandbox = Sandbox::new();
+    sandbox.start_daemon(&[]);
+    let default_text = fs::read_to_string(sandbox.config_file()).unwrap();
+    let default_path = sandbox.config_file();
+    let other = sandbox.root.join("other.json");
+    fs::write(&other, r#"{"backend":"local"}"#).unwrap();
+    let missing = sandbox.root.join("missing.json");
+
+    for (file, args) in [
+        (&other, vec!["backend", "chatgpt"]),
+        (&other, vec!["backend"]),
+        (&missing, vec!["backend", "chatgpt"]),
+        (&missing, vec!["backend"]),
+    ] {
+        let mut words = vec!["--config", file.to_str().unwrap()];
+        words.extend(args);
+        let output = sandbox.wispx(&words);
+        assert_eq!(output.status.code(), Some(1), "{words:?}");
+        assert!(output.stdout.is_empty(), "{words:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(default_path.to_str().unwrap()), "{error}");
+        assert!(error.contains(file.to_str().unwrap()), "{error}");
+        assert!(error.contains("--config"), "{error}");
+    }
+    assert_eq!(
+        fs::read_to_string(&other).unwrap(),
+        r#"{"backend":"local"}"#
+    );
+    assert!(!missing.exists());
+    assert_eq!(
+        fs::read_to_string(&default_path).unwrap(),
+        default_text,
+        "nothing changed"
+    );
+    assert_eq!(sandbox.status()["backend"], "local");
+
+    // Another name for the daemon's own file is that file.
+    let link = sandbox.root.join("link.json");
+    symlink(&default_path, &link).unwrap();
+    let link_text = link.to_str().unwrap();
+    sandbox.ok(&["--config", link_text, "backend", "chatgpt"]);
+    assert_eq!(sandbox.status()["backend"], "chatgpt");
+    assert_eq!(sandbox.saved_backend(&default_path), "chatgpt");
+    assert!(fs::symlink_metadata(&link).unwrap().is_symlink());
+}
+
+#[test]
+fn a_backend_that_cannot_be_saved_is_not_applied_or_reported_as_changed() {
+    let mut sandbox = Sandbox::new();
+    sandbox.configure(r#""paste":"copy","backend":"chatgpt""#);
+    sandbox.start_daemon(&[]);
+    let broken = "{ this is not json";
+    fs::write(sandbox.config_file(), broken).unwrap();
+
+    let output = sandbox.wispx(&["backend", "local"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("still chatgpt"), "{error}");
+    assert_eq!(sandbox.status()["backend"], "chatgpt");
+    assert_eq!(fs::read_to_string(sandbox.config_file()).unwrap(), broken);
+    sandbox.ok(&["quit"]);
+    assert_eq!(sandbox.wait_for_exit(), 0);
+
+    // No warning about uploads for a switch that did not happen.
+    sandbox.configure(r#""paste":"copy""#);
+    sandbox.start_daemon(&[]);
+    fs::write(sandbox.config_file(), broken).unwrap();
+    let output = sandbox.wispx(&["backend", "chatgpt"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("still local"), "{error}");
+    assert!(!error.contains("chatgpt.com"), "{error}");
+    assert_eq!(sandbox.status()["backend"], "local");
+}
+
+#[test]
+fn without_a_daemon_the_backend_command_edits_the_named_file() {
+    let sandbox = Sandbox::new();
+    let default_text = fs::read_to_string(sandbox.config_file()).unwrap();
+    let other = sandbox.root.join("other.json");
+    let path = other.to_str().unwrap();
+
+    let reply = sandbox.ok(&["--config", path, "backend", "chatgpt"]);
+    assert!(reply.starts_with("Backend: chatgpt\n"), "{reply}");
+    assert!(reply.contains(path), "{reply}");
+    assert!(reply.contains("chatgpt.com"), "must warn: {reply}");
+    assert_eq!(sandbox.saved_backend(&other), "chatgpt");
+    assert_eq!(sandbox.ok(&["--config", path, "backend"]).trim(), "chatgpt");
+    assert_eq!(
+        fs::read_to_string(sandbox.config_file()).unwrap(),
+        default_text
+    );
+
+    let reply = sandbox.ok(&["backend", "chatgpt"]);
+    assert!(reply.contains("chatgpt.com"), "must warn: {reply}");
+    assert_eq!(sandbox.saved_backend(&sandbox.config_file()), "chatgpt");
+    assert_eq!(sandbox.ok(&["backend"]).trim(), "chatgpt");
+}
+
+#[test]
+fn switching_backends_says_what_happens_to_work_under_way() {
+    let mut sandbox = Sandbox::new();
+    sandbox.whisper_hangs();
+    sandbox.start_daemon(&[]);
+    sandbox.dictate();
+    let whisper = sandbox.pid_of("whisper.pid");
+
+    let reply = sandbox.ok(&["backend", "chatgpt"]);
+    assert!(reply.contains("already under way"), "{reply}");
+    assert!(reply.contains("wispx cancel"), "{reply}");
+    assert_eq!(sandbox.status()["backend"], "chatgpt");
+    assert!(process_alive(whisper), "the running job was left to finish");
+
+    sandbox.ok(&["cancel"]);
+    wait_until("the backend to die", || !process_alive(whisper));
+}
+
+#[test]
+fn a_daemon_that_cannot_be_asked_changes_nothing() {
+    let sandbox = Sandbox::new();
+    if fs::metadata(&sandbox.root).unwrap().uid() == 0 {
+        return; // Root connects to anything, and this needs a refusal.
+    }
+    let text = fs::read_to_string(sandbox.config_file()).unwrap();
+    fs::create_dir(sandbox.runtime()).unwrap();
+    fs::set_permissions(sandbox.runtime(), Permissions::from_mode(0o700)).unwrap();
+    fs::write(sandbox.socket(), b"").unwrap();
+    fs::set_permissions(sandbox.socket(), Permissions::from_mode(0o000)).unwrap();
+
+    for args in [&["backend", "chatgpt"][..], &["backend"][..]] {
+        let output = sandbox.wispx(args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("cannot ask the daemon"), "{error}");
+    }
+    assert_eq!(fs::read_to_string(sandbox.config_file()).unwrap(), text);
 }
 
 // Lifecycle.

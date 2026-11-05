@@ -7,7 +7,7 @@
 //! responsive no matter how a tool behaves.
 
 use crate::audio::{self, RecorderPlan, Recording, wav};
-use crate::config::{Backend, Config, HotkeyMode, Overrides, PasteMode};
+use crate::config::{self, Backend, Config, HotkeyMode, Overrides, PasteMode};
 use crate::desktop::SessionKind;
 use crate::desktop::clipboard::{Clipboard, ToolClipboard};
 use crate::desktop::kwin::FocusInfo;
@@ -593,12 +593,7 @@ impl Daemon {
                 return;
             }
             Request::Reload => self.reload(),
-            Request::SetBackend(backend) => {
-                // The file was already updated, and it must now win.
-                self.overrides.backend = None;
-                self.reload()
-                    .map(|_| format!("Backend: {}", backend.as_str()))
-            }
+            Request::SetBackend(backend) => self.set_backend(backend),
             Request::PasteSetup => {
                 self.paste_setup(reply);
                 return;
@@ -631,6 +626,7 @@ impl Daemon {
             "level": self.recording.as_ref().map(|active| active.recording.level()),
             "transcribing": self.in_flight.len(),
             "backend": self.config.backend.as_str(),
+            "config": self.config_path.to_string_lossy(),
             "session": self.desktop.describe(),
             "hotkey": self.hotkey.describe(),
             "paste": self.paste_status(),
@@ -688,6 +684,36 @@ impl Daemon {
             injector.restore_in_background();
         }
         Ok("Settings reloaded. Shortcut suggestions apply on the next start".to_string())
+    }
+
+    /// Changes the backend now and for later runs, or not at all. Only saving can
+    /// fail, so it goes first. Other settings wait for `wispx reload`, as always.
+    fn set_backend(&mut self, backend: Backend) -> Result<String, String> {
+        config::persist_backend(&self.config_path, backend).map_err(|error| {
+            format!(
+                "The backend is still {}: {error}",
+                self.config.backend.as_str()
+            )
+        })?;
+        // The file has the final say now, so a reload must not bring back a
+        // `--backend` given at startup.
+        self.overrides.backend = None;
+        let mut config = Config::clone(&self.config);
+        config.backend = backend;
+        self.config = Arc::new(config);
+
+        let mut message = format!(
+            "Backend: {}\nSaved in {}",
+            backend.as_str(),
+            self.config_path.display()
+        );
+        if !self.in_flight.is_empty() {
+            message.push_str(
+                "\nTranscriptions already under way finish with the backend they started \
+                 with. `wispx cancel` stops them.",
+            );
+        }
+        Ok(message)
     }
 
     fn paste_setup(&self, reply: Sender<Value>) {
