@@ -77,7 +77,7 @@ namespace WispX
         {
             int filled = (int)Math.Ceiling(level * _segments.Length);
             for (int i = 0; i < _segments.Length; i++)
-                _segments[i].SetResourceReference(Border.BackgroundProperty, i < filled ? "AccentFillColorDefaultBrush" : "ControlStrongFillColorDefaultBrush");
+                _segments[i].SetResourceReference(Border.BackgroundProperty, i < filled ? "AccentFillColorDefaultBrush" : "ControlAltFillColorTertiaryBrush");
         }
     }
 }

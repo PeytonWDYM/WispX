@@ -56,11 +56,6 @@ namespace WispX
                 int step = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? -1 : 1;
                 SelectPage((Navigation.SelectedIndex + step + 4) % 4); e.Handled = true;
             }
-            else if ((e.Key is Key.Up or Key.Down or Key.Left or Key.Right) && Navigation.IsKeyboardFocusWithin)
-            {
-                int step = e.Key is Key.Up or Key.Left ? -1 : 1;
-                SelectPage((Navigation.SelectedIndex + step + 4) % 4); e.Handled = true;
-            }
         }
     }
 }

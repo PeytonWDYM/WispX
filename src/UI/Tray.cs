@@ -12,7 +12,7 @@ namespace WispX
             try { icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath) ?? System.Drawing.SystemIcons.Application; }
             catch { icon = System.Drawing.SystemIcons.Application; }
             var menu = new Forms.ContextMenuStrip { ShowImageMargin = false, ShowCheckMargin = false };
-            _title = new Forms.ToolStripMenuItem($"WispX \u00B7 hold {_settings.Hotkey.Display}") { Enabled = false };
+            _title = new Forms.ToolStripMenuItem("") { Enabled = false };
             _status = new Forms.ToolStripMenuItem("") { Enabled = false };
             _copyLast = new Forms.ToolStripMenuItem("Copy last transcript", null, (s, e) =>
             {
@@ -43,9 +43,12 @@ namespace WispX
                 options.Select();
                 _status.Text = ChatGptTranscriber.HasLogin() ? "\u2713 Using your ChatGPT login from Codex" : "\u26A0 Not signed in. Open Codex and sign in";
             };
-            _tray = new Forms.NotifyIcon { Icon = icon, Text = "WispX", ContextMenuStrip = menu, Visible = true };
-            _tray.Text = $"WispX \u00B7 hold {_settings.Hotkey.Display}";
+            _tray = new Forms.NotifyIcon { Icon = icon, ContextMenuStrip = menu, Visible = true };
+            UpdateTrayText();
             _tray.MouseClick += (s, e) => { if (e.Button == Forms.MouseButtons.Left) OpenOptions(); };
         }
+
+        /// <summary>Tray title and tooltip name the current shortcut.</summary>
+        private void UpdateTrayText() => _title.Text = _tray.Text = $"WispX \u00B7 hold {_settings.Hotkey.Display}";
     }
 }

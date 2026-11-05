@@ -4,9 +4,12 @@
         <Border x:Name="ShortcutCard" Style="{DynamicResource Card}">
             <StackPanel>
                 <TextBlock Text="Dictation shortcut" Style="{DynamicResource CardTitle}" Margin="0,0,0,20"/>
-                <WrapPanel x:Name="Keycaps" MinHeight="52" VerticalAlignment="Center"/>
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <WrapPanel x:Name="Keycaps" MinHeight="52" VerticalAlignment="Center"/>
+                    <Button x:Name="Change" Grid.Column="1" Content="Change&#x2026;" Style="{DynamicResource AccentButtonStyle}" VerticalAlignment="Center" MinWidth="110" Padding="20,7" Click="ChangeClick"/>
+                </Grid>
                 <TextBlock Text="Hold to talk &#xB7; add Space for hands-free &#xB7; Esc cancels" Style="{DynamicResource Description}" Margin="0,16,0,0"/>
-                <Button x:Name="Change" Content="Change&#x2026;" Style="{DynamicResource AccentButtonStyle}" HorizontalAlignment="Right" Margin="0,24,0,0" Padding="20,7" Click="ChangeClick"/>
             </StackPanel>
         </Border>
         <TextBlock x:Name="Error" Text="Use at least two keys, or Right Ctrl / Right Alt on its own" Foreground="{DynamicResource SystemFillColorCautionBrush}" TextWrapping="Wrap" Visibility="Collapsed" Margin="0,0,0,12"/>

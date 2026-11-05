@@ -21,7 +21,7 @@
             <StackPanel>
                 <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <TextBlock Text="&#xE8F2;" Style="{DynamicResource Glyph}"/>
+                    <TextBlock Text="&#xE774;" Style="{DynamicResource Glyph}"/>
                     <StackPanel Grid.Column="1"><TextBlock Text="Language" Style="{DynamicResource CardTitle}"/><TextBlock Text="Auto-detect, or give transcription a language hint." Style="{DynamicResource Description}"/></StackPanel>
                 </Grid>
                 <ComboBox x:Name="LanguagePicker" HorizontalAlignment="Stretch" Margin="0,18,0,0" DisplayMemberPath="Name" SelectedValuePath="Code" AutomationProperties.Name="Language"/>

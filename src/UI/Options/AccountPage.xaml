@@ -4,14 +4,14 @@
         <Border Style="{DynamicResource Card}">
             <StackPanel>
                 <Grid>
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <TextBlock x:Name="StatusIcon" Style="{DynamicResource Glyph}" RenderTransformOrigin="0.5,0.5"><TextBlock.RenderTransform><ScaleTransform/></TextBlock.RenderTransform></TextBlock>
                     <StackPanel Grid.Column="1">
                         <TextBlock x:Name="Status" Style="{DynamicResource CardTitle}"/>
                         <TextBlock x:Name="Detail" Style="{DynamicResource Description}"/>
                     </StackPanel>
+                    <Button Grid.Column="2" Content="Check again" VerticalAlignment="Center" Margin="16,0,0,0" Padding="16,7" Click="CheckAgain"/>
                 </Grid>
-                <Button Content="Check again" HorizontalAlignment="Right" Margin="0,20,0,0" Padding="16,7" Click="CheckAgain"/>
             </StackPanel>
         </Border>
     </StackPanel>

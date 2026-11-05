@@ -256,11 +256,9 @@ namespace WispX
         {
             Sounds.Enabled = _settings.Sounds;
             _overlay.IdlePillEnabled = _settings.IdlePill;
-            _overlay.Idle();
+            if (!_recording && _inFlight == 0) _overlay.Idle(); // never yank the pill out from under a dictation
             _hook.Hotkey = _settings.Hotkey;
-            _title.Text = $"WispX ? hold {_settings.Hotkey.Display}";
-            string tip = $"WispX ? hold {_settings.Hotkey.Display} to dictate";
-            _tray.Text = tip.Length > 63 ? tip[..63] : tip;
+            UpdateTrayText();
         }
 
         /// <summary>Restore the existing Options window, or create it after its previous instance closed.</summary>

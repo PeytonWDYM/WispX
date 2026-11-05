@@ -29,16 +29,24 @@
                     <StackPanel Orientation="Horizontal" Background="{DynamicResource SubtleFillColorTransparentBrush}">
                         <Border x:Name="Track" Width="40" Height="20" CornerRadius="10" BorderThickness="1"
                                 BorderBrush="{DynamicResource ControlStrongStrokeColorDefaultBrush}" Background="{DynamicResource ControlAltFillColorSecondaryBrush}">
-                            <Ellipse x:Name="Thumb" Width="12" Height="12" Margin="3,0" HorizontalAlignment="Left" Fill="{DynamicResource TextFillColorSecondaryBrush}"/>
+                            <Ellipse x:Name="Thumb" Width="12" Height="12" Margin="3,0" HorizontalAlignment="Left" Fill="{DynamicResource TextFillColorSecondaryBrush}">
+                                <Ellipse.RenderTransform><TranslateTransform x:Name="ThumbShift"/></Ellipse.RenderTransform>
+                            </Ellipse>
                         </Border>
                         <ContentPresenter Margin="9,0,0,0" VerticalAlignment="Center" TextElement.Foreground="{TemplateBinding Foreground}"/>
                     </StackPanel>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Track" Property="Background" Value="{DynamicResource ToggleButtonBackgroundPointerOver}"/></Trigger>
+                        <!-- The thumb slides across the track (one-shot, 160 ms) instead of jumping. -->
                         <Trigger Property="IsChecked" Value="True">
+                            <Trigger.EnterActions><BeginStoryboard><Storyboard>
+                                <DoubleAnimation Storyboard.TargetName="ThumbShift" Storyboard.TargetProperty="X" To="20" Duration="0:0:0.16"><DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction></DoubleAnimation>
+                            </Storyboard></BeginStoryboard></Trigger.EnterActions>
+                            <Trigger.ExitActions><BeginStoryboard><Storyboard>
+                                <DoubleAnimation Storyboard.TargetName="ThumbShift" Storyboard.TargetProperty="X" To="0" Duration="0:0:0.16"><DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut"/></DoubleAnimation.EasingFunction></DoubleAnimation>
+                            </Storyboard></BeginStoryboard></Trigger.ExitActions>
                             <Setter TargetName="Track" Property="Background" Value="{DynamicResource ToggleButtonBackgroundChecked}"/>
                             <Setter TargetName="Track" Property="BorderBrush" Value="{DynamicResource ToggleButtonBackgroundChecked}"/>
-                            <Setter TargetName="Thumb" Property="HorizontalAlignment" Value="Right"/>
                             <Setter TargetName="Thumb" Property="Fill" Value="{DynamicResource TextOnAccentFillColorPrimaryBrush}"/>
                         </Trigger>
                         <MultiTrigger>
