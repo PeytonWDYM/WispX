@@ -13,7 +13,9 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Runs on the maintainer's LocalCI runner unless the repository variable
+    # CI_RUNNER is 'hosted'. Fork pull requests always stay GitHub-hosted.
+    runs-on: ${{ vars.CI_RUNNER != 'hosted' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","local-ci"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@v4
 
