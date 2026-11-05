@@ -24,7 +24,8 @@ namespace WispX
         private ChatGptTranscriber _gpt;
         private HotkeyHook _hook;
         private Forms.NotifyIcon _tray;
-        private Forms.ToolStripMenuItem _copyLast, _status;
+        private Forms.ToolStripMenuItem _copyLast, _status, _title;
+        private OptionsWindow _options;
 
         private bool _recording;
         private DateTime _recStart;
@@ -39,6 +40,17 @@ namespace WispX
             int ex0 = Array.IndexOf(e.Args, "--export-sounds");
             if (ex0 >= 0 && e.Args.Length > ex0 + 1) { Sounds.Export(e.Args[ex0 + 1]); Quitting = true; Shutdown(); return; }
 
+            int tour = Array.IndexOf(e.Args, "--options-tour");
+            if (tour >= 0 && e.Args.Length > tour + 1)
+            {
+                _settings = Settings.Load();
+                _options = new OptionsWindow(_settings, null, () => false, tour: true);
+                _options.Topmost = true;
+                _options.Show();
+                _ = OptionsTour.RunAsync(_options, e.Args[tour + 1]);
+                return;
+            }
+
             // Running the downloaded WispX.exe installs (or updates) it and relaunches from the install folder.
             if (Installer.EnsureInstalled(e.Args)) { Quitting = true; Shutdown(); return; }
 
@@ -52,7 +64,7 @@ namespace WispX
                 return;
             }
             _wake = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\WispX.Wake.v1");
-            new Thread(() => { while (_wake.WaitOne()) Dispatcher.BeginInvoke(() => Greet(again: true)); })
+            new Thread(() => { while (_wake.WaitOne()) Dispatcher.BeginInvoke(OpenOptions); })
             { IsBackground = true, Name = "WispX.Wake" }.Start();
             var quitEvt = new EventWaitHandle(false, EventResetMode.AutoReset, Installer.QuitEventName);
             new Thread(() => { if (quitEvt.WaitOne()) Dispatcher.BeginInvoke(Quit); })
@@ -71,11 +83,13 @@ namespace WispX
             ChatGptTranscriber.Warmup();
 
             _hook = new HotkeyHook(ev => Dispatcher.BeginInvoke(() => OnHotkey(ev)));
+            _hook.Hotkey = _settings.Hotkey;
             _hook.Start();
 
             _maxTimer.Tick += async (s, ev) => { _maxTimer.Stop(); _hook.ForceIdle(); await FinishAsync(); };
 
             BuildTray();
+            _settings.Saved += ApplySettings;
 
             int st = Array.FindIndex(e.Args, a => a == "--selftest");
             if (st >= 0 && e.Args.Length > st + 2) { _ = SelfTestAsync(e.Args[st + 1], e.Args[st + 2]); return; }
@@ -87,7 +101,7 @@ namespace WispX
                 _settings.FirstRunDone = true;
                 _settings.Save();
                 _tray.ShowBalloonTip(6000, "WispX is running",
-                    "Hold Ctrl + Win and talk. Let go to type it.\nCtrl + Win + Space = hands-free. Esc = cancel.", Forms.ToolTipIcon.None);
+                    $"Hold {_settings.Hotkey.Display} and talk. Let go to type it.\n{_settings.Hotkey.Display} + Space = hands-free. Esc = cancel.", Forms.ToolTipIcon.None);
             }
         }
 
@@ -96,7 +110,7 @@ namespace WispX
             if (!ChatGptTranscriber.HasLogin())
                 _overlay.Message("Sign in to the Codex app first", MsgKind.Warn, 4);
             else
-                _overlay.Message(again ? "WispX is running · hold Ctrl + Win" : "Hold Ctrl + Win to dictate", MsgKind.Info, 2.8);
+                _overlay.Message(again ? $"WispX is running \u00B7 hold {_settings.Hotkey.Display}" : $"Hold {_settings.Hotkey.Display} to dictate", MsgKind.Info, 2.8);
         }
 
         // ------------------------------------------------------------------ dictation flow
@@ -123,7 +137,8 @@ namespace WispX
                 _overlay.Message("Sign in to the Codex app first", MsgKind.Warn, 3.5);
                 return;
             }
-            try { _rec.Start(); }
+            _options?.StopMicrophoneTest();
+            try { _rec.Start(_settings.Microphone); }
             catch
             {
                 _hook.ForceIdle();
@@ -236,61 +251,27 @@ namespace WispX
             Quit();
         }
 
-        // ------------------------------------------------------------------ tray
-
-        private void BuildTray()
+        /// <summary>Every saved preference takes effect without restarting the tray app.</summary>
+        private void ApplySettings()
         {
-            System.Drawing.Icon icon;
-            try { icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath) ?? System.Drawing.SystemIcons.Application; }
-            catch { icon = System.Drawing.SystemIcons.Application; }
+            Sounds.Enabled = _settings.Sounds;
+            _overlay.IdlePillEnabled = _settings.IdlePill;
+            if (!_recording && _inFlight == 0) _overlay.Idle(); // never yank the pill out from under a dictation
+            _hook.Hotkey = _settings.Hotkey;
+            UpdateTrayText();
+        }
 
-            var menu = new Forms.ContextMenuStrip { ShowImageMargin = false, ShowCheckMargin = true };
-            var title = new Forms.ToolStripMenuItem("WispX · hold Ctrl + Win") { Enabled = false };
-            _status = new Forms.ToolStripMenuItem("") { Enabled = false };
-            _copyLast = new Forms.ToolStripMenuItem("Copy last transcript", null, (s, e) =>
+        /// <summary>Restore the existing Options window, or create it after its previous instance closed.</summary>
+        private void OpenOptions()
+        {
+            if (_options == null)
             {
-                if (_lastTranscript != null) Injector.SetText(_lastTranscript, excludeFromHistory: false);
-            }) { Enabled = false };
-
-            var sounds = new Forms.ToolStripMenuItem("Sounds") { Checked = _settings.Sounds, CheckOnClick = true };
-            sounds.CheckedChanged += (s, e) => { _settings.Sounds = Sounds.Enabled = sounds.Checked; _settings.Save(); };
-
-            var pill = new Forms.ToolStripMenuItem("Show idle pill") { Checked = _settings.IdlePill, CheckOnClick = true };
-            pill.CheckedChanged += (s, e) => { _settings.IdlePill = _overlay.IdlePillEnabled = pill.Checked; _settings.Save(); _overlay.Idle(); };
-
-            var startup = new Forms.ToolStripMenuItem("Start with Windows") { CheckOnClick = true };
-            try { startup.Checked = Settings.StartWithWindows; } catch { }
-            startup.CheckedChanged += (s, e) => { try { Settings.StartWithWindows = startup.Checked; } catch { } };
-
-            var help = new Forms.ToolStripMenuItem("How to use", null, (s, e) =>
-                _tray.ShowBalloonTip(7000, "WispX",
-                    "Hold Ctrl + Win → talk → let go. Text is typed where your cursor is.\n" +
-                    "Ctrl + Win, then Space → hands-free. Ctrl + Win again to finish.\nEsc → cancel.",
-                    Forms.ToolTipIcon.None));
-
-            var quit = new Forms.ToolStripMenuItem("Quit WispX", null, (s, e) => Quit());
-            var uninstall = new Forms.ToolStripMenuItem("Uninstall WispX…", null, (s, e) =>
-            {
-                var ok = Forms.MessageBox.Show("Remove WispX from this PC?\n\nYour Codex/ChatGPT login isn't touched.",
-                    "Uninstall WispX", Forms.MessageBoxButtons.OKCancel, Forms.MessageBoxIcon.None);
-                if (ok != Forms.DialogResult.OK) return;
-                Installer.Uninstall();
-                Quit();
-            });
-
-            menu.Items.AddRange(new Forms.ToolStripItem[]
-            {
-                title, _status, new Forms.ToolStripSeparator(),
-                _copyLast, new Forms.ToolStripSeparator(),
-                sounds, pill, startup, new Forms.ToolStripSeparator(),
-                help, uninstall, quit,
-            });
-            menu.Opening += (s, e) => _status.Text = ChatGptTranscriber.HasLogin()
-                ? "✓ Using your ChatGPT login from Codex"
-                : "⚠ Not signed in. Open Codex and sign in";
-
-            _tray = new Forms.NotifyIcon { Icon = icon, Text = "WispX · hold Ctrl + Win to dictate", ContextMenuStrip = menu, Visible = true };
-            _tray.MouseClick += (s, e) => { if (e.Button == Forms.MouseButtons.Left) Greet(again: true); };
+                _options = new OptionsWindow(_settings, _hook, () => _recording);
+                _options.Closed += (s, e) => _options = null;
+                _options.Show();
+            }
+            if (_options.WindowState == WindowState.Minimized) _options.WindowState = WindowState.Normal;
+            _options.Activate();
         }
 
         private void Quit()

@@ -1,11 +1,13 @@
 using System;
 using System.IO;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using NAudio.Wave;
 
 namespace WispX
 {
-    /// <summary>Records the default microphone to 16 kHz mono PCM and exposes a live level for the waveform.</summary>
+    /// <summary>Records a selected microphone to 16 kHz mono PCM and exposes a live level for the waveform.</summary>
     internal sealed class Recorder
     {
         private const int Rate = 16000;
@@ -19,15 +21,23 @@ namespace WispX
         public float Level => _level;
         public bool IsRecording => _wave != null;
 
-        public void Start()
+        /// <summary>Names reported by Windows; an empty selection follows its default device.</summary>
+        public static IReadOnlyList<string> InputDevices() => Enumerable.Range(0, WaveInEvent.DeviceCount)
+            .Select(i => WaveInEvent.GetCapabilities(i).ProductName).ToArray();
+
+        public void Start(string deviceName)
         {
             Cancel();
             _pcm = new MemoryStream();
             _peak = 0; _level = 0;
             _stopped = new ManualResetEventSlim(false);
+            int device = -1;
+            if (deviceName.Length > 0)
+                for (int i = 0; i < WaveInEvent.DeviceCount; i++)
+                    if (WaveInEvent.GetCapabilities(i).ProductName == deviceName) { device = i; break; }
             var w = new WaveInEvent
             {
-                DeviceNumber = -1, // WAVE_MAPPER: follows the Windows default mic
+                DeviceNumber = device, // WAVE_MAPPER (-1) follows the Windows default mic
                 WaveFormat = new WaveFormat(Rate, 16, 1),
                 BufferMilliseconds = 30,
                 NumberOfBuffers = 4,
@@ -35,8 +45,9 @@ namespace WispX
             w.DataAvailable += OnData;
             var stoppedEvt = _stopped;
             w.RecordingStopped += (_, __) => stoppedEvt.Set();
-            w.StartRecording();
             _wave = w;
+            try { w.StartRecording(); }
+            catch { Cancel(); throw; }
         }
 
         private void OnData(object sender, WaveInEventArgs e)

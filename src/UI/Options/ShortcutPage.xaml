@@ -1,0 +1,18 @@
+<UserControl x:Class="WispX.ShortcutPage" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel>
+        <TextBlock Text="Shortcut" Style="{DynamicResource PageTitle}"/>
+        <Border x:Name="ShortcutCard" Style="{DynamicResource Card}">
+            <StackPanel>
+                <TextBlock Text="Dictation shortcut" Style="{DynamicResource CardTitle}" Margin="0,0,0,20"/>
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <WrapPanel x:Name="Keycaps" MinHeight="52" VerticalAlignment="Center"/>
+                    <Button x:Name="Change" Grid.Column="1" Content="Change&#x2026;" Style="{DynamicResource AccentButtonStyle}" VerticalAlignment="Center" MinWidth="110" Padding="20,7" Click="ChangeClick"/>
+                </Grid>
+                <TextBlock Text="Hold to talk &#xB7; add Space for hands-free &#xB7; Esc cancels" Style="{DynamicResource Description}" Margin="0,16,0,0"/>
+            </StackPanel>
+        </Border>
+        <TextBlock x:Name="Error" Text="Use at least two keys, or Right Ctrl / Right Alt on its own" Foreground="{DynamicResource SystemFillColorCautionBrush}" TextWrapping="Wrap" Visibility="Collapsed" Margin="0,0,0,12"/>
+        <Button Content="Reset to Ctrl + Win" HorizontalAlignment="Left" Background="{DynamicResource SubtleFillColorTransparentBrush}" BorderThickness="0" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" Click="ResetClick"/>
+    </StackPanel>
+</UserControl>

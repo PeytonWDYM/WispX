@@ -5,12 +5,16 @@ using Microsoft.Win32;
 
 namespace WispX
 {
+    /// <summary>Per-user preferences, persisted atomically and applied live by the app.</summary>
     internal sealed class Settings
     {
         public bool Sounds { get; set; } = true;
         public bool IdlePill { get; set; } = true;
         /// <summary>Optional ISO language hint like "en". Blank = auto-detect.</summary>
         public string Language { get; set; } = "";
+        public Hotkey Hotkey { get; set; } = Hotkey.Default;
+        public string Microphone { get; set; } = "";
+        public event Action Saved;
         public bool FirstRunDone { get; set; }
 
         private static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WispX");
@@ -25,12 +29,15 @@ namespace WispX
 
         public void Save()
         {
-            try
+            Directory.CreateDirectory(Dir);
+            string tmp = FilePath + ".tmp";
+            using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
             {
-                Directory.CreateDirectory(Dir);
-                File.WriteAllText(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+                JsonSerializer.Serialize(stream, this, new JsonSerializerOptions { WriteIndented = true });
+                stream.Flush(true);
             }
-            catch { }
+            File.Move(tmp, FilePath, overwrite: true);
+            Saved?.Invoke();
         }
 
         private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
