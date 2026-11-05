@@ -197,11 +197,19 @@ fn single_type_len(signature: &[u8], depth: usize) -> Result<usize, Error> {
         b'(' | b'{' => {
             let close = if *first == b'(' { b')' } else { b'}' };
             let mut at = 1;
+            let mut members = 0;
             while signature.get(at).is_some_and(|byte| *byte != close) {
                 at += single_type_len(&signature[at..], depth + 1)?;
+                members += 1;
             }
             if signature.get(at) != Some(&close) {
                 return protocol("unterminated container in signature");
+            }
+            if *first == b'(' && members == 0 {
+                return protocol("structure with no members in signature");
+            }
+            if *first == b'{' && members != 2 {
+                return protocol("dictionary entry without exactly a key and a value");
             }
             Ok(at + 1)
         }
@@ -401,7 +409,12 @@ impl<'a> Decoder<'a> {
                 };
                 let mut items = Vec::new();
                 while self.at < end {
+                    let before = self.at;
                     items.push(self.value(element, depth + 1)?);
+                    // Every pass must use up input, or this would never end.
+                    if self.at == before {
+                        return protocol("array element takes up no space");
+                    }
                 }
                 if self.at != end {
                     return protocol("array length does not match its elements");
@@ -427,9 +440,6 @@ impl<'a> Decoder<'a> {
                 self.align(8)?;
                 let total = single_type_len(signature, depth)?;
                 let key_len = single_type_len(&signature[1..], depth)?;
-                if 1 + key_len >= total - 1 {
-                    return protocol("dictionary entry has no value");
-                }
                 let key = self.value(&signature[1..1 + key_len], depth + 1)?;
                 let entry = self.value(&signature[1 + key_len..total - 1], depth + 1)?;
                 Value::DictEntry(Box::new(key), Box::new(entry))
@@ -1201,6 +1211,49 @@ mod tests {
             variants.extend_from_slice(&[1, b'v', 0]);
         }
         assert!(Decoder::new(&variants, false).values("v").is_err());
+    }
+
+    /// A signal whose body has the given signature and bytes.
+    fn signal_frame(signature: &str, body: &[u8]) -> Vec<u8> {
+        let mut fields = vec![8, 1, b'g', 0, signature.len() as u8];
+        fields.extend_from_slice(signature.as_bytes());
+        fields.push(0);
+
+        let mut frame = vec![b'l', 4, 0, 1];
+        frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&1u32.to_le_bytes());
+        frame.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+        frame.extend_from_slice(&fields);
+        frame.resize(frame.len().next_multiple_of(8), 0);
+        frame.extend_from_slice(body);
+        frame
+    }
+
+    #[test]
+    fn empty_containers_on_the_wire_are_protocol_errors() {
+        // Eight bytes of "elements" that would each take up no space, which used
+        // to allocate empty structures forever.
+        let body = [8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        for signature in ["a()", "a(())", "aa()", "a(y())"] {
+            let frame = signal_frame(signature, &body);
+            assert_eq!(frame_len(&frame).unwrap(), Some(frame.len()));
+            assert!(
+                matches!(decode_message(&frame), Err(Error::Protocol(_))),
+                "{signature}"
+            );
+        }
+
+        // The same thing hidden inside a variant.
+        let variant = [3, b'a', b'(', b')', 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0];
+        let frame = signal_frame("v", &variant);
+        assert!(matches!(decode_message(&frame), Err(Error::Protocol(_))));
+
+        for signature in ["()", "a{}", "a{s}", "a{sss}"] {
+            assert!(
+                Decoder::new(&body, false).values(signature).is_err(),
+                "{signature}"
+            );
+        }
     }
 
     #[test]
