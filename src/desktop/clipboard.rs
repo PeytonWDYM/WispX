@@ -12,6 +12,13 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_BACKUP: usize = 4 * 1024 * 1024;
 const TEXT_TYPE: &str = "text/plain;charset=utf-8";
 
+/// The clipboard that dictation uses here.
+#[cfg(unix)]
+pub type SystemClipboard = ToolClipboard;
+
+#[cfg(windows)]
+pub use crate::win::clipboard::WinClipboard as SystemClipboard;
+
 pub trait Clipboard: Send + Sync {
     /// The current plain text, or `None` if the clipboard holds anything else.
     fn read_text(&self) -> Result<Option<String>, String>;
@@ -164,7 +171,7 @@ impl Clipboard for ToolClipboard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;

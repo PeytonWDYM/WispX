@@ -5,6 +5,8 @@
 
 Hold **Ctrl + Win**, talk, let go. What you said gets typed wherever your cursor is.
 
+A Rust port is being tested alongside this app. See [On Windows](../README.md#on-windows). This page is about the original.
+
 ChatGPT does the transcription, the same way the Dictate button in the ChatGPT and Codex apps does. WispX uses the login the Codex app already saved on your PC, so there's no API key and no extra sign-in.
 
 ## Install

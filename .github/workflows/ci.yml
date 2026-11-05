@@ -9,7 +9,38 @@ permissions:
   contents: read
 
 jobs:
-  linux:
+  # What most people build: the app, with its windows. Arch is here because it
+  # always has the Qt and LayerShellQt that Plasma 6 needs.
+  app:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install Rust, Qt and LayerShellQt
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git rust dbus \
+            qt6-base qt6-declarative qt6-wayland layer-shell-qt wayland
+
+      - uses: actions/checkout@v4
+
+      # The tests that start a real compositor are opt-in, so this needs no display.
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # Not as root, since some tests rely on a file permission being refused.
+      - name: Test
+        run: |
+          useradd --create-home tester
+          chown -R tester .
+          su tester -c 'cargo test --locked'
+
+      - name: Release build
+        run: cargo build --locked --release
+
+  # The daemon and command line alone, which need nothing from Qt.
+  headless:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,8 +58,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes dbus
 
-      - name: Format
-        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --no-default-features
+
+      - name: Release build
+        run: cargo build --locked --release --no-default-features
+
+  # Windows has no Qt: the app there is plain Win32, declared by hand in src/win. The
+  # tests cover the logic that doesn't need a desktop, so whether the keyboard hook,
+  # the pill and pasting work still takes a person, who can start from this build.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
 
       - name: Lint
         run: cargo clippy --locked --all-targets -- -D warnings
@@ -38,3 +88,12 @@ jobs:
 
       - name: Release build
         run: cargo build --locked --release
+
+      - name: Keep the programs
+        uses: actions/upload-artifact@v4
+        with:
+          name: wispx-windows-x64
+          path: |
+            target/release/wispx.exe
+            target/release/wispx-gui.exe
+          if-no-files-found: error

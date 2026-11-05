@@ -6,8 +6,8 @@
 //! safe: by the time KWin answers, focus may already have moved to another window,
 //! which would then look like the target.
 
+use super::FocusInfo;
 use super::clipboard::Clipboard;
-use super::kwin::FocusInfo;
 use crate::config::{PasteMode, PasteShortcut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -79,6 +79,10 @@ pub trait Injector: Send + Sync {
     fn ready(&self) -> bool;
     fn current_focus(&self) -> Result<Option<FocusInfo>, String>;
     fn send_paste(&self, keys: Keys) -> Result<(), String>;
+    /// Waits until keys can be sent cleanly. An error leaves the text on the clipboard.
+    fn prepare(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -170,6 +174,9 @@ pub fn deliver(request: Delivered<'_>) -> Delivery {
         return Delivery::Failed(message);
     }
     thread::sleep(request.timing.settle + request.timing.before_inject);
+    if let Err(message) = injector.prepare() {
+        return copy_because(CopyReason::PasteFailed(message));
+    }
 
     // Time has passed and the keys are about to fire, so look once more.
     if request.cancel.load(Ordering::SeqCst) {

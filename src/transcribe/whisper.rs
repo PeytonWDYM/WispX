@@ -9,8 +9,19 @@ use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
 
+#[cfg(unix)]
 const INSTALL_HINT: &str = "Install whisper.cpp (https://github.com/ggml-org/whisper.cpp) and \
                             put whisper-cli on PATH, or set whisper.binary in the config";
+#[cfg(windows)]
+const INSTALL_HINT: &str = "Get it from the WispX settings window, or put whisper-cli.exe on \
+                            PATH, or set whisper.binary in the config";
+/// What Windows exits a program with when a DLL it needs isn't there, without a word.
+#[cfg(windows)]
+const STATUS_DLL_NOT_FOUND: i32 = 0xC000_0135_u32 as i32;
+#[cfg(windows)]
+const MISSING_RUNTIME: &str = "whisper.cpp needs the Microsoft Visual C++ Redistributable, which \
+                               isn't on this PC. Install it from \
+                               https://aka.ms/vs/17/release/vc_redist.x64.exe and try again";
 /// More threads than this barely helps whisper.cpp and starves the desktop.
 const MAX_AUTO_THREADS: usize = 8;
 
@@ -115,6 +126,10 @@ pub fn transcribe(
     })?;
 
     if !output.status.success() {
+        #[cfg(windows)]
+        if output.status.code() == Some(STATUS_DLL_NOT_FOUND) {
+            return Err(TranscribeError::Failed(MISSING_RUNTIME.to_string()));
+        }
         let detail = process::last_error_line(&output.stderr)
             .unwrap_or_else(|| format!("exit status {}", output.status));
         return Err(TranscribeError::Failed(format!(
@@ -129,7 +144,7 @@ pub fn transcribe(
     Ok(parse_transcript(&output.stdout))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;

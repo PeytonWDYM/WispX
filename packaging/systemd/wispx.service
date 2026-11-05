@@ -1,5 +1,6 @@
-# An alternative to `wispx setup --autostart`; use one or the other. It isn't
-# installed for you. Run `wispx setup` first, for the desktop entry, then:
+# For running WispX with no windows at all. The app starts and stops its own
+# background service, so don't use this alongside it, or alongside Start at login.
+# It isn't installed for you. Run `wispx setup` first, for the desktop entry, then:
 #
 #   cp packaging/systemd/wispx.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload

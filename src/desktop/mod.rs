@@ -1,14 +1,58 @@
 //! Everything that touches the desktop session: clipboard, focus, paste and
-//! feedback. KDE Plasma on Wayland is the primary target; other sessions get the
-//! subset that can be delivered honestly.
+//! feedback. On Linux, KDE Plasma on Wayland is the primary target and other
+//! sessions get the subset that can be delivered honestly. Windows gets all of it.
 
 pub mod clipboard;
+#[cfg(unix)]
 pub mod kwin;
 pub mod notify;
 pub mod paste;
+#[cfg(unix)]
 pub mod remote;
 
-use std::env;
+use std::path::Path;
+use std::sync::Arc;
+
+#[cfg(unix)]
+pub use remote::PlasmaInjector as PlatformInjector;
+
+#[cfg(windows)]
+pub use crate::win::input::WinInjector as PlatformInjector;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FocusInfo {
+    /// Unique for each window, unlike its title or class.
+    pub id: String,
+    pub class: String,
+}
+
+/// How a request for permission to paste ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SetupOutcome {
+    Granted,
+    Declined,
+}
+
+/// The way to paste automatically in this session, if it has one.
+#[cfg(unix)]
+pub fn platform_injector(session: &SessionKind, runtime: &Path) -> Option<Arc<PlatformInjector>> {
+    if !session.is_plasma() {
+        return None;
+    }
+    match remote::token_path() {
+        Ok(token_file) => Some(PlatformInjector::new(runtime.to_path_buf(), token_file)),
+        Err(error) => {
+            eprintln!("wispx: automatic paste is off: {error}");
+            None
+        }
+    }
+}
+
+/// Windows lets any program send keys, so there is nothing to set up.
+#[cfg(windows)]
+pub fn platform_injector(_session: &SessionKind, _runtime: &Path) -> Option<Arc<PlatformInjector>> {
+    Some(Arc::new(PlatformInjector))
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionKind {
@@ -18,16 +62,27 @@ pub enum SessionKind {
     },
     /// Only used as a secondary compatibility path.
     X11,
+    Windows,
     Unknown,
 }
 
 impl SessionKind {
+    #[cfg(unix)]
     pub fn detect() -> Self {
-        detect_from(|name| env::var(name).ok())
+        detect_from(|name| std::env::var(name).ok())
+    }
+
+    #[cfg(windows)]
+    pub fn detect() -> Self {
+        SessionKind::Windows
     }
 
     pub fn is_wayland(&self) -> bool {
         matches!(self, SessionKind::Wayland { .. })
+    }
+
+    pub fn is_windows(&self) -> bool {
+        *self == SessionKind::Windows
     }
 
     pub fn is_plasma(&self) -> bool {
@@ -42,6 +97,7 @@ impl SessionKind {
             }
             SessionKind::Wayland { desktop, .. } => format!("{desktop} on Wayland"),
             SessionKind::X11 => "X11".to_string(),
+            SessionKind::Windows => "Windows".to_string(),
             SessionKind::Unknown => "no graphical session found".to_string(),
         }
     }
@@ -49,6 +105,7 @@ impl SessionKind {
 
 /// `WAYLAND_DISPLAY` is checked first because Wayland sessions usually also set
 /// `DISPLAY` for XWayland, which says nothing about the session itself.
+#[cfg_attr(windows, allow(dead_code))]
 fn detect_from(get: impl Fn(&str) -> Option<String>) -> SessionKind {
     let set = |name: &str| get(name).is_some_and(|value| !value.is_empty());
     let desktop = get("XDG_CURRENT_DESKTOP").unwrap_or_default();

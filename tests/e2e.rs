@@ -7,6 +7,8 @@
 //! Each test clears the environment and gets scratch XDG directories, so nothing
 //! reaches the microphone, network, Codex login, clipboard or desktop session.
 
+#![cfg(unix)]
+
 #[allow(dead_code)]
 #[path = "../src/dbus.rs"]
 mod dbus;
@@ -16,7 +18,9 @@ use serde_json::Value as Json;
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File, Permissions};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1078,16 +1082,140 @@ fn setup_writes_only_the_desktop_entries_it_was_asked_for() {
         .root
         .join("config/autostart/io.github.PeytonWDYM.WispX.desktop");
 
+    // Built without the desktop app, an entry has only the daemon to run.
+    let exe = env!("CARGO_BIN_EXE_wispx");
+    let has_app = Path::new(exe).with_file_name("wispx-gui").is_file();
+    let (open, at_login) = if has_app {
+        ("app", "app --background")
+    } else {
+        ("daemon --quiet", "daemon --quiet")
+    };
+
     sandbox.ok(&["setup"]);
     let text = fs::read_to_string(&entry).unwrap();
-    assert!(text.contains(&format!(
-        "Exec=\"{}\" daemon --quiet",
-        env!("CARGO_BIN_EXE_wispx")
-    )));
+    assert!(text.contains(&format!("Exec=\"{exe}\" {open}\n")), "{text}");
+    assert!(!text.contains("NoDisplay"), "{text}");
     assert!(!autostart.exists());
 
     sandbox.ok(&["setup", "--autostart"]);
-    assert_eq!(fs::read_to_string(&autostart).unwrap(), text);
+    let text = fs::read_to_string(&autostart).unwrap();
+    assert!(
+        text.contains(&format!("Exec=\"{exe}\" {at_login}\n")),
+        "{text}"
+    );
+}
+
+#[test]
+fn with_no_command_and_no_display_it_says_what_can_run() {
+    let sandbox = Sandbox::new();
+    let output = sandbox
+        .command()
+        .env_remove("WAYLAND_DISPLAY")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(said.contains("wispx daemon"), "{said}");
+    assert!(!sandbox.runtime().exists(), "it left something behind");
+}
+
+/// One request on the daemon's socket, as the app sends it.
+fn ask(sandbox: &Sandbox, request: &str) -> Json {
+    let stream = UnixStream::connect(sandbox.socket()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    writeln!(&stream, "{request}").unwrap();
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line).unwrap();
+    serde_json::from_str(&line).unwrap()
+}
+
+#[test]
+fn the_app_can_watch_a_recording_as_it_happens() {
+    let mut sandbox = Sandbox::new();
+    sandbox.start_daemon(&[]);
+    let stream = UnixStream::connect(sandbox.socket()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    writeln!(&stream, "watch feedback").unwrap();
+    let mut events = BufReader::new(&stream).lines();
+    let mut next_matching = |wanted: &dyn Fn(&Json) -> bool| loop {
+        let line = events.next().expect("the stream ended").unwrap();
+        let event: Json = serde_json::from_str(&line).unwrap();
+        if wanted(&event) {
+            return event;
+        }
+    };
+
+    let first = next_matching(&|_| true);
+    assert_eq!(first["event"], "status");
+    assert_eq!(first["state"], "idle");
+    assert_eq!(first["backend"], "local");
+
+    sandbox.ok(&["press"]);
+    next_matching(&|event| event["event"] == "status" && event["state"] == "recording");
+    // The real level of what the recorder produced, not an animation.
+    let level = next_matching(&|event| {
+        event["event"] == "level" && event["level"].as_f64().is_some_and(|level| level > 0.5)
+    });
+    assert!(level["level"].as_f64().unwrap() <= 1.0);
+
+    sandbox.ok(&["cancel"]);
+    next_matching(&|event| event["event"] == "status" && event["state"] == "idle");
+}
+
+#[test]
+fn settings_saved_through_the_daemon_apply_at_once_and_bad_ones_change_nothing() {
+    let mut sandbox = Sandbox::new();
+    sandbox.start_daemon(&[]);
+    let path = sandbox.root.join("config/wispx/config.json");
+    assert_eq!(sandbox.status()["settings"]["sounds"], false);
+
+    let reply = ask(&sandbox, r#"configure {"sounds":true}"#);
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(sandbox.status()["settings"]["sounds"], true);
+    let saved: Json = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(saved["sounds"], true);
+    assert_eq!(saved["paste"], "copy", "other settings were lost");
+
+    let before = fs::read_to_string(&path).unwrap();
+    let reply = ask(&sandbox, r#"configure {"no_such_setting":1}"#);
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    assert_eq!(sandbox.status()["settings"]["sounds"], true);
+
+    let reply = ask(&sandbox, "readiness");
+    assert_eq!(reply["ok"], true, "{reply}");
+    let checks = reply["checks"].as_array().unwrap();
+    assert!(checks.iter().any(|check| check["name"] == "recorder"));
+    assert!(!sandbox.has("recorder.pid"), "checking opened the mic");
+}
+
+#[test]
+fn a_daemon_the_app_started_stops_when_the_app_is_gone() {
+    let sandbox = Sandbox::new();
+    let mut child = sandbox
+        .command()
+        .args(["daemon", "--quiet", "--app-child"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until("the daemon to listen", || {
+        sandbox.wispx(&["status"]).status.success()
+    });
+    sandbox.ok(&["press"]);
+    sandbox.wait_for_recording();
+    let recorder = sandbox.pid_of("recorder.pid");
+
+    // However the app ended, its end of the pipe is closed.
+    drop(child.stdin.take());
+    wait_until("the daemon to stop", || child.try_wait().unwrap().is_some());
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+    wait_until("the recorder to exit", || !process_alive(recorder));
 }
 
 #[test]
@@ -1876,7 +2004,7 @@ fn paste_setup_is_what_grants_access_and_a_refusal_stays_copy_only() {
         sandbox.status()["paste"]
             .as_str()
             .unwrap()
-            .contains("paste-setup")
+            .contains("has not been allowed yet")
     );
 
     desktop.state().allow_remote = false;

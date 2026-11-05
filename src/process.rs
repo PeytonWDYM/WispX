@@ -12,8 +12,12 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,7 +30,12 @@ use std::time::{Duration, Instant};
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
 /// Enough to explain a failure, without unbounded memory for a chatty tool.
 const STDERR_TAIL: usize = 8 * 1024;
-const ETXTBSY: i32 = 26;
+/// "Text file busy" on Unix and the sharing violation that means the same on
+/// Windows, where scanners also hold on to a file that was only just written.
+const BUSY: i32 = if cfg!(windows) { 32 } else { 26 };
+/// Keeps a console tool from opening a window of its own.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Finds executables on a captured search path.
 #[derive(Clone, Debug)]
@@ -37,7 +46,7 @@ pub struct Toolbox {
 impl Toolbox {
     pub fn from_env() -> Self {
         Toolbox {
-            path: env::var_os("PATH").unwrap_or_default(),
+            path: search_path(),
         }
     }
 
@@ -48,15 +57,13 @@ impl Toolbox {
 
     /// Resolves a bare name on the search path, or checks an explicit path.
     pub fn find(&self, name: &str) -> Option<PathBuf> {
-        if name.contains('/') {
-            let path = Path::new(name);
-            return is_executable(path).then(|| path.to_path_buf());
+        if is_explicit_path(name) {
+            return executable_named(Path::new(name));
         }
         env::split_paths(&self.path)
             // An empty entry would mean "the current directory".
             .filter(|dir| dir.is_absolute())
-            .map(|dir| dir.join(name))
-            .find(|candidate| is_executable(candidate))
+            .find_map(|dir| executable_named(&dir.join(name)))
     }
 
     pub fn has(&self, name: &str) -> bool {
@@ -64,10 +71,70 @@ impl Toolbox {
     }
 }
 
-fn is_executable(path: &Path) -> bool {
-    path.metadata()
+#[cfg(unix)]
+fn search_path() -> OsString {
+    env::var_os("PATH").unwrap_or_default()
+}
+
+/// `PATH`, then next to this program, then where WispX downloads whisper.cpp.
+#[cfg(windows)]
+fn search_path() -> OsString {
+    let mut dirs: Vec<PathBuf> = env::var_os("PATH")
+        .map(|path| env::split_paths(&path).collect())
+        .unwrap_or_default();
+    if let Some(dir) = env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        dirs.push(dir);
+    }
+    if let Ok(data) = crate::paths::data_dir() {
+        dirs.push(data.join("whisper").join("Release"));
+    }
+    env::join_paths(dirs).unwrap_or_default()
+}
+
+fn is_explicit_path(name: &str) -> bool {
+    name.contains('/') || (cfg!(windows) && name.contains('\\'))
+}
+
+#[cfg(unix)]
+fn executable_named(path: &Path) -> Option<PathBuf> {
+    let found = path
+        .metadata()
         .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+        .unwrap_or(false);
+    found.then(|| path.to_path_buf())
+}
+
+/// Windows has no execute bit, and finds a program by its extension.
+#[cfg(windows)]
+fn executable_named(path: &Path) -> Option<PathBuf> {
+    let is_file = |path: &Path| path.metadata().is_ok_and(|meta| meta.is_file());
+    if path.extension().is_some() && is_file(path) {
+        return Some(path.to_path_buf());
+    }
+    ["exe", "cmd", "bat"].iter().find_map(|extension| {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(".");
+        name.push(extension);
+        let candidate = PathBuf::from(name);
+        is_file(&candidate).then_some(candidate)
+    })
+}
+
+/// Sets a child up to be stopped on its own. On Unix that is a process group, so a
+/// signal also reaches children of wrapper scripts, and on Windows it is no console
+/// window (the daemon's job object is what catches anything those leave behind).
+pub fn own_group(command: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        command.process_group(0)
+    }
+    #[cfg(windows)]
+    {
+        command.creation_flags(CREATE_NO_WINDOW)
+    }
 }
 
 pub struct Spec<'a> {
@@ -143,9 +210,8 @@ pub fn run(spec: Spec<'_>) -> Result<Output, RunError> {
             Stdio::piped()
         } else {
             Stdio::null()
-        })
-        // Its own group, so a timeout also reaches children of wrapper scripts.
-        .process_group(0);
+        });
+    own_group(&mut command);
 
     let mut child = spawn_with_retry(&mut command).map_err(|e| RunError::Spawn(name.clone(), e))?;
     let pid = child.id();
@@ -200,13 +266,13 @@ pub fn run(spec: Spec<'_>) -> Result<Output, RunError> {
     })
 }
 
-/// Retries the spurious "text file busy" another thread's concurrent fork can
-/// cause for a script that was only just written.
+/// Retries the spurious "file busy" another thread's concurrent fork can cause for
+/// a script that was only just written.
 pub fn spawn_with_retry(command: &mut Command) -> io::Result<Child> {
     let mut attempts = 0;
     loop {
         match command.spawn() {
-            Err(error) if error.raw_os_error() == Some(ETXTBSY) && attempts < 10 => {
+            Err(error) if error.raw_os_error() == Some(BUSY) && attempts < 10 => {
                 attempts += 1;
                 thread::sleep(Duration::from_millis(10));
             }
@@ -339,7 +405,7 @@ impl Drain {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;

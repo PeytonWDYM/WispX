@@ -1,17 +1,20 @@
-//! XDG locations and the private runtime directory.
+//! Where things live: XDG locations on Linux, the AppData folders on Windows, and
+//! the private runtime directory.
 
 use std::env;
-use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
+use std::fs::{self, File, OpenOptions};
 use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub fn home() -> Option<PathBuf> {
-    env::var_os("HOME")
+    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
 }
 
+#[cfg(unix)]
 fn xdg_dir(variable: &str, fallback: &str) -> Result<PathBuf, String> {
     // The XDG spec requires ignoring relative values.
     if let Some(value) = env::var_os(variable).map(PathBuf::from)
@@ -24,14 +27,35 @@ fn xdg_dir(variable: &str, fallback: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("neither {variable} nor HOME is set"))
 }
 
+#[cfg(unix)]
 pub fn default_config_file() -> Result<PathBuf, String> {
     Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?
         .join("wispx")
         .join("config.json"))
 }
 
+#[cfg(unix)]
 pub fn data_dir() -> Result<PathBuf, String> {
     Ok(xdg_dir("XDG_DATA_HOME", ".local/share")?.join("wispx"))
+}
+
+#[cfg(windows)]
+fn known_folder(variable: &str) -> Result<PathBuf, String> {
+    env::var_os(variable)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| format!("{variable} is not set"))
+}
+
+/// `%APPDATA%\WispX`, which is also where the original app keeps `settings.json`.
+#[cfg(windows)]
+pub fn default_config_file() -> Result<PathBuf, String> {
+    Ok(known_folder("APPDATA")?.join("WispX").join("config.json"))
+}
+
+#[cfg(windows)]
+pub fn data_dir() -> Result<PathBuf, String> {
+    Ok(known_folder("LOCALAPPDATA")?.join("WispX"))
 }
 
 /// Codex keeps its login under `$CODEX_HOME`, defaulting to `~/.codex`.
@@ -51,7 +75,10 @@ pub fn default_codex_auth_file() -> Result<PathBuf, String> {
 pub fn expand_absolute(value: &str) -> Result<PathBuf, String> {
     let path = if value == "~" {
         home().ok_or("HOME is not set")?
-    } else if let Some(rest) = value.strip_prefix("~/") {
+    } else if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\").filter(|_| cfg!(windows)))
+    {
         home().ok_or("HOME is not set")?.join(rest)
     } else {
         PathBuf::from(value)
@@ -74,6 +101,7 @@ pub fn runtime_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+#[cfg(unix)]
 fn runtime_location() -> Result<PathBuf, String> {
     match env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
         Some(base) if base.is_absolute() && base.is_dir() => Ok(base.join("wispx")),
@@ -82,6 +110,12 @@ fn runtime_location() -> Result<PathBuf, String> {
             Ok(env::temp_dir().join(format!("wispx-{uid}")))
         }
     }
+}
+
+/// Windows has no per-user tmpfs, but this folder is only open to this user.
+#[cfg(windows)]
+fn runtime_location() -> Result<PathBuf, String> {
+    Ok(data_dir()?.join("run"))
 }
 
 pub fn socket_path(runtime: &Path) -> PathBuf {
@@ -97,10 +131,12 @@ pub fn client_socket_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/nonexistent/wispx.sock"))
 }
 
+#[cfg(unix)]
 pub fn applications_dir() -> Result<PathBuf, String> {
     Ok(xdg_dir("XDG_DATA_HOME", ".local/share")?.join("applications"))
 }
 
+#[cfg(unix)]
 pub fn autostart_dir() -> Result<PathBuf, String> {
     Ok(xdg_dir("XDG_CONFIG_HOME", ".config")?.join("autostart"))
 }
@@ -112,21 +148,53 @@ pub fn lock_path(runtime: &Path) -> PathBuf {
 /// Creates `dir` as 0700, or accepts an existing directory only if this user
 /// owns it. The ownership check is what makes the `/tmp` fallback safe against
 /// another user pre-creating the path.
+#[cfg(unix)]
 pub fn ensure_private_dir(dir: &Path) -> Result<(), String> {
-    match DirBuilder::new().mode(0o700).create(dir) {
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(format!("cannot create {}: {e}", dir.display())),
     }
     let meta = check_own_dir(dir)?;
     if meta.mode() & 0o077 != 0 {
-        fs::set_permissions(dir, Permissions::from_mode(0o700))
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
             .map_err(|e| format!("cannot restrict {}: {e}", dir.display()))?;
     }
     Ok(())
 }
 
+/// Creates `dir` so that only this user can open it, or accepts a real directory
+/// that is already there. It sits under `%LOCALAPPDATA%`, which no other ordinary
+/// user can write to, so unlike `/tmp` nobody else can have put it there first.
+#[cfg(windows)]
+pub fn ensure_private_dir(dir: &Path) -> Result<(), String> {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+    if let Some(parent) = dir.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    crate::win::security::create_private_dir(dir)
+        .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let meta = fs::symlink_metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !meta.is_dir() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!(
+            "{} exists but is not a directory; refusing to use it",
+            dir.display()
+        ));
+    }
+    Ok(())
+}
+
+/// A named pipe checks who it is talking to on connecting, so its path need not.
+#[cfg(windows)]
+fn check_own_dir(_dir: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 /// Accepts only a real directory that this user owns, not a symlink to one.
+#[cfg(unix)]
 fn check_own_dir(dir: &Path) -> Result<fs::Metadata, String> {
     let meta = fs::symlink_metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     if !meta.file_type().is_dir() {
@@ -145,15 +213,18 @@ fn check_own_dir(dir: &Path) -> Result<fs::Metadata, String> {
     Ok(meta)
 }
 
-/// Creates a new file readable only by this user, failing if the path exists.
+/// Creates a new file readable only by this user, failing if the path exists. On
+/// Windows it inherits that from its folder, which `ensure_private_dir` set up or
+/// which is a part of the user's own profile.
 pub fn create_private_file(path: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path)
 }
 
+#[cfg(unix)]
 pub fn current_uid() -> io::Result<u32> {
     // /proc/self is owned by the effective user; this avoids an FFI call.
     fs::metadata("/proc/self").map(|meta| meta.uid())
@@ -193,6 +264,8 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
         let mut file = create_private_file(&temporary)?;
         file.write_all(contents)?;
         file.sync_all()?;
+        // Windows cannot rename a file that is still open.
+        drop(file);
         fs::rename(&temporary, &target)
     })();
     if let Err(error) = result {
@@ -202,10 +275,11 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    use std::fs::Permissions;
 
     #[test]
     fn relative_paths_are_rejected() {

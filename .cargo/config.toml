@@ -1,0 +1,4 @@
+# The Windows app installs itself from one download, so it can't count on the Visual C++
+# runtime being there, and without it the program wouldn't even get to say so.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

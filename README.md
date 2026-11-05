@@ -4,32 +4,37 @@
 
 Hold a key, talk, let go. What you said appears where your cursor is.
 
-This is the Linux version, written in Rust and built first for **KDE Plasma on Wayland**. Speech is recognised on your own machine by [whisper.cpp](https://github.com/ggml-org/whisper.cpp), so by default no audio leaves your computer. It needs no root access and never reads your keyboard: Plasma owns the shortcuts and tells WispX when they go down and come up.
+This is the Linux version of the WispX app, written in Rust and built first for **KDE Plasma on Wayland**. A small pill sits at the bottom of your screen and shows what WispX is doing, and a tray icon holds the rest. Speech is recognised on your own machine by [whisper.cpp](https://github.com/ggml-org/whisper.cpp), so by default no audio leaves your computer. It needs no root access and never reads your keyboard: Plasma owns the shortcuts and tells WispX when they go down and come up.
 
-Looking for the Windows app? See [windows/README.md](windows/README.md).
+Looking for the Windows app? See [windows/README.md](windows/README.md). This Rust version also has a [Windows build](#on-windows), which is still waiting for its first real test.
 
 ## Quick start on KDE Plasma
 
-You need Rust 1.89 or newer, [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with `whisper-cli` on your `PATH`, `wl-clipboard`, and PipeWire. Plasma 6 includes the rest.
+You need Rust 1.89 or newer, a C++ compiler, Qt 6 and LayerShellQt to build it, and [whisper.cpp](https://github.com/ggml-org/whisper.cpp) with `whisper-cli` on your `PATH`, `wl-clipboard`, and PipeWire to run it. Plasma 6 includes the rest.
 
 ```sh
-# Build and install
-cargo build --release
-install -Dm755 target/release/wispx ~/.local/bin/wispx
+# Arch and CachyOS: whisper.cpp itself comes from the AUR
+sudo pacman -S --needed base-devel rust qt6-base qt6-declarative qt6-wayland layer-shell-qt wl-clipboard
 
-# Download a speech model to where WispX looks for it
-curl -L --create-dirs -o ~/.local/share/wispx/models/ggml-base.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
-
-# Let the desktop recognise WispX, and check that everything is in place
-wispx setup
-wispx doctor
-
-# Start it
-wispx daemon
+# Debian and Ubuntu, on a release with Plasma 6 and Qt 6. These names aren't tested
+sudo apt install build-essential cargo pkg-config qt6-base-dev qt6-base-private-dev qt6-declarative-dev \
+  qt6-wayland liblayershellqtinterface-dev libwayland-dev qml6-module-qtquick qml6-module-qtquick-controls \
+  qml6-module-qtquick-layouts qml6-module-qtquick-dialogs qml6-module-qtquick-window wl-clipboard
 ```
 
-The first time it starts, Plasma asks you to confirm the shortcuts. After that, they just work:
+```sh
+cargo build --release
+install -Dm755 target/release/wispx target/release/wispx-gui -t ~/.local/bin/
+wispx
+```
+
+That opens WispX. From then on it's also in your applications menu, and the terminal can close: the app keeps running in the background. Opening it a second time brings up its settings window.
+
+The first time, the settings window lists what's left to do, with a button for each:
+
+- **Speech model:** download one, or choose one you already have. A model already at `~/.local/share/wispx/models/ggml-base.bin` is used as it is.
+- **Shortcuts:** Plasma asks you to confirm them. After that, they just work.
+- **Automatic paste:** press **Enable automatic paste** and allow it in the dialog.
 
 | Keys | What it does |
 | --- | --- |
@@ -37,17 +42,27 @@ The first time it starts, Plasma asks you to confirm the shortcuts. After that, 
 | Ctrl + Meta + Space | Hands-free: starts recording, or keeps a hold going after you let go. Press it again to finish. |
 | Ctrl + Meta + Backspace | Cancels the recording or the transcription. |
 
-To start WispX when you log in, run `wispx setup --autostart`. To change the keys, use System Settings > Keyboard > Shortcuts > WispX. If a shortcut does nothing, check there whether something else uses the same keys: Plasma can report a shortcut as set even when another one takes it.
+To change the keys, use System Settings > Keyboard > Shortcuts > WispX, and the settings window shows whatever is really bound. If a shortcut does nothing, check there whether something else uses the same keys: Plasma can report a shortcut as set even when another one takes it.
+
+### What you'll see
+
+The pill never takes focus, so your cursor stays where you were typing:
+
+| Pill | Meaning |
+| --- | --- |
+| A small dark bar | Ready. You can hide this with **Show idle pill**. |
+| White bars that move with your voice | Recording. They follow the real microphone level. |
+| A lock and a pulsing red dot around the bars | Hands-free. |
+| A wave travelling across | Transcribing. |
+| A short message | What just happened, such as a failure or text left on the clipboard. |
+
+The tray icon's menu has the status, **Copy last transcript**, **Sounds**, **Show idle pill**, **Start at login**, **Settings**, **How to use** and **Quit**. The settings window also chooses the speech backend, model, language and microphone. Quitting stops the background service and the recording with it. If you started `wispx daemon` yourself, the app uses that one, and leaves it running when it quits.
 
 ### Pasting automatically
 
-Out of the box, your words go to the clipboard and you press Ctrl + V. To have them pasted for you, run this once and allow it in the dialog:
+Until you allow it, your words go to the clipboard and you press Ctrl + V. **Enable automatic paste** in the settings window asks the desktop once, and it remembers. `wispx paste-setup` does the same from a terminal.
 
-```sh
-wispx paste-setup
-```
-
-This uses the RemoteDesktop portal, asking for the keyboard only, because that's the sanctioned way for a Wayland program to press keys. Plasma may show that a remote control session is active while WispX runs. To stop WispX using it, delete `~/.local/share/wispx/remote-desktop-token` and restart the daemon.
+This uses the RemoteDesktop portal, asking for the keyboard only, because that's the sanctioned way for a Wayland program to press keys. Plasma may show that a remote control session is active while WispX runs. To stop WispX using it, delete `~/.local/share/wispx/remote-desktop-token` and quit and reopen WispX.
 
 ## What happens to your words
 
@@ -68,7 +83,9 @@ Good to know:
 ## Commands
 
 ```
-wispx daemon           Run in the foreground and listen for shortcuts
+wispx                  Open the app, or bring up the one already running
+wispx app --background Open it with no window unless something needs attention
+wispx daemon           Run without any window, in the foreground, and listen for shortcuts
 wispx doctor           Check tools, models and desktop support; changes nothing
 wispx status [--json]  Show what WispX is doing
 wispx last             Print the last transcript
@@ -78,18 +95,18 @@ wispx backend [NAME]   Show or change the backend: local or chatgpt
 wispx transcribe FILE  Print the text of a 16 kHz mono 16-bit WAV file
 ```
 
-`wispx --help` lists everything. The `transcribe` command needs no daemon, and prints only the transcript, so it works in scripts. Convert other audio with `ffmpeg -i in.mp3 -ar 16000 -ac 1 -c:a pcm_s16le out.wav`.
+`wispx --help` lists everything. `wispx daemon` needs no display and no Qt, and shows feedback as desktop notifications instead of the pill. The `transcribe` command needs no daemon, and prints only the transcript, so it works in scripts. Convert other audio with `ffmpeg -i in.mp3 -ar 16000 -ac 1 -c:a pcm_s16le out.wav`.
 
 ## Other desktops
 
 Plasma is the only desktop WispX has been tested on with its full workflow. Elsewhere, `wispx doctor` tells you what your session offers.
 
-| Session | Shortcuts | Delivery |
-| --- | --- | --- |
-| KDE Plasma on Wayland | Portal shortcuts, including hold and release | Automatic paste, or clipboard |
-| GNOME on Wayland | Portal shortcuts if your version offers them; not tested | Clipboard |
-| Other Wayland desktops | Your desktop's own key bindings, see below | Clipboard |
-| X11 (needs `xclip` or `xsel`) | Your window manager's key bindings, see below | Clipboard |
+| Session | Shortcuts | Delivery | Pill |
+| --- | --- | --- | --- |
+| KDE Plasma on Wayland | Portal shortcuts, including hold and release | Automatic paste, or clipboard | Yes |
+| GNOME on Wayland | Portal shortcuts if your version offers them; not tested | Clipboard | No: GNOME has no layer shell, so feedback falls back to notifications |
+| Other Wayland desktops | Your desktop's own key bindings, see below | Clipboard | If the compositor has a layer shell; not tested |
+| X11 (needs `xclip` or `xsel`) | Your window manager's key bindings, see below | Clipboard | Yes; not tested |
 
 Automatic paste needs a way to verify the focused window, and WispX only has one on Plasma. No Wayland program can reliably do this everywhere, so WispX falls back to the clipboard rather than risk typing into the wrong window.
 
@@ -111,16 +128,37 @@ bindsym --no-repeat $mod+Shift+t exec wispx toggle
 bindsym --no-repeat $mod+BackSpace exec wispx cancel
 ```
 
+## On Windows
+
+The same core also builds for Windows, drawing the pill, tray icon and settings window with Win32 itself, so Qt isn't involved. **CI builds it and runs its tests on Windows, but nobody has used it on a real Windows desktop yet.** Until someone has, expect problems, and use the [original app](windows/README.md) for anything that matters.
+
+| Keys | What it does |
+| --- | --- |
+| Hold Ctrl + Win | Records. Let go and the text appears. |
+| Ctrl + Win, then Space | Hands-free. Press Ctrl + Win again to finish. |
+| Esc | Cancel |
+
+To build it you need Windows 10 version 1803 or later and Rust. `cargo build --release` leaves `wispx-gui.exe`, the app, and `wispx.exe`, the command line, in `target\release`.
+
+Run `wispx-gui.exe` and it does what the original does: it copies itself to `%LOCALAPPDATA%\Programs\WispX`, adds a Start menu entry and starts from there. Running a newer copy later is the update. Add `--portable` to run it where it is, without installing anything. The exe isn't code-signed, so SmartScreen may warn you.
+
+Speech recognition is local by default here too. The settings window offers to download a build of whisper.cpp and a model, and that build of whisper.cpp needs the [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe). ChatGPT works as on Linux.
+
+Like the original, it can't reach apps running as administrator: Windows won't let a program see or press keys while one of those has focus, so dictation doesn't start there.
+
+Settings are in `%APPDATA%\WispX\config.json`, and models and the runtime folder in `%LOCALAPPDATA%\WispX`. **Uninstall WispX…** in the tray menu removes those and the program, and leaves your Codex login alone.
+
 ## Settings
 
-`wispx config init` writes the settings to `~/.config/wispx/config.json`, and `wispx reload` applies changes. Unknown settings are rejected, so typos don't silently do nothing.
+The settings window covers what most people change, and applies it straight away. Everything else is in `~/.config/wispx/config.json`: `wispx config init` writes the file, and `wispx reload` applies changes. Unknown settings are rejected, so typos don't silently do nothing.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `backend` | `local` | `local` or `chatgpt`. WispX never falls back from one to the other. |
 | `language` | auto-detect | Language code such as `en`. |
 | `sounds` | `true` | Sounds for start, stop and errors. |
-| `notifications` | `all` | Popups: `all`, `errors` or `none`. |
+| `idle_pill` | `true` | Keep a small pill on screen while WispX is ready. |
+| `notifications` | `all` | Popups: `all`, `errors` or `none`. The app's pill takes their place while it's open. |
 | `hotkey` | `auto` | `auto`, `portal` or `none`. |
 | `shortcuts` | see above | Keys suggested to the desktop on first start, such as `CTRL+LOGO+d`. Once set, change them in System Settings. |
 | `paste` | `auto` | `auto`, `copy`, or `none` to only keep text for `wispx last`. |
@@ -141,7 +179,7 @@ bindsym --no-repeat $mod+BackSpace exec wispx cancel
 
 ## The ChatGPT backend
 
-You can use ChatGPT for transcription instead, with the login the Codex app or CLI already saved. There's no API key and no extra sign-in. It's off unless you turn it on:
+You can use ChatGPT for transcription instead, with the login the Codex app or CLI already saved. There's no API key and no extra sign-in. It's off unless you turn it on, under **Speech** in the settings window, which asks you to confirm, or with:
 
 ```sh
 wispx backend chatgpt
@@ -162,7 +200,9 @@ While the daemon is running, `wispx backend` works on the daemon rather than on 
 
 ## What WispX runs
 
-WispX has one direct Rust dependency, `serde_json`, which brings in 4 more crates. It keeps that small by running the tools your system already has, as separate programs with separate arguments and no shell in between:
+WispX has one direct Rust dependency, `serde_json`, which brings in 4 more crates. The windows are drawn by a separate program, `wispx-gui`, using your system's Qt 6 and LayerShellQt through a small C++ bridge. Everything they show is decided in Rust, and `wispx` itself links neither. To build without them, for a server or a desktop you don't want windows on, use `cargo build --release --no-default-features`.
+
+WispX keeps the rest small by running the tools your system already has, as separate programs with separate arguments and no shell in between:
 
 | Tool | Used for | Needed |
 | --- | --- | --- |
@@ -171,7 +211,8 @@ WispX has one direct Rust dependency, `serde_json`, which brings in 4 more crate
 | `wl-copy`, `wl-paste` | Clipboard on Wayland | Yes on Wayland |
 | `xclip` or `xsel` | Clipboard on X11 | Only on X11 |
 | `pw-play`, `paplay` or `aplay` | Sounds | Optional |
-| `curl` | Sending audio to ChatGPT, with the token passed over stdin rather than on a command line | Only for the ChatGPT backend |
+| `curl` | Downloading a speech model when you ask; sending audio to ChatGPT, with the token passed over stdin rather than on a command line | For those two things |
+| `pactl` | Listing microphones in the settings window | Optional |
 
 It also talks over D-Bus, through a small client built into WispX, to these services on your session bus:
 
@@ -179,11 +220,12 @@ It also talks over D-Bus, through a small client built into WispX, to these serv
 | --- | --- |
 | `xdg-desktop-portal` with its KDE backend | Shortcuts and, once allowed, pressing the paste keys |
 | KWin | Finding out which window has focus, with a small script it loads and removes for each check |
-| A notification server | Popups |
+| A notification server | Popups, for `wispx daemon` |
+| The status notifier watcher | The tray icon |
 
-## Differences from the Windows app
+## Differences from the original Windows app
 
-Most of these come from Wayland, which deliberately doesn't let programs watch the keyboard or type freely.
+This compares Linux with the original app in `windows/`. Most of these come from Wayland, which deliberately doesn't let programs watch the keyboard or type freely.
 
 | | Windows | Linux |
 | --- | --- | --- |
@@ -192,10 +234,11 @@ Most of these come from Wayland, which deliberately doesn't let programs watch t
 | Hands-free | Ctrl + Win, then Space | Ctrl + Meta + Space, alone or during a hold |
 | Cancel | Esc | Ctrl + Meta + Backspace, since a program can't claim plain Esc on Wayland |
 | Pressing another key during a hold | Cancels | Nothing happens, since WispX can't see other keys |
-| Typing into the target | Always | Needs `wispx paste-setup`, otherwise clipboard |
-| On-screen feedback | Overlay pill | Desktop notifications and sounds |
-| Controls | Tray icon | `wispx` commands; there's no tray icon |
-| Install | Self-installing exe | Built from source, with `wispx setup` for the desktop entry |
+| Typing into the target | Always | Needs **Enable automatic paste**, otherwise clipboard |
+| On-screen feedback | Overlay pill | The same pill, anchored through the Wayland layer shell |
+| Controls | Tray icon | Tray icon, a settings window, and `wispx` commands |
+| Fullscreen apps | Hides the idle pill | The same: a fullscreen window covers it until it has something to show |
+| Install | Self-installing exe | Built from source, and adds itself to the applications menu when opened |
 | Codex login | Refreshed and written back | Read only |
 
 ## Development
@@ -205,19 +248,26 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
+
+# The same without Qt
+cargo test --no-default-features
 ```
 
 `cargo test` needs no microphone, display, network or account. Recorders, `whisper-cli`, `curl` and clipboard tools are scripts on a private `PATH`, and the desktop's services are a mock on a private `dbus-daemon`. Each test gets scratch directories and a cleared environment.
 
-One further test file runs the real desktop stack: a private headless KWin with the real portal, KDE backend, shortcuts, consent dialogs, clipboard tools and a real terminal window. It presses real keys inside that session, with only the microphone replaced. It starts a compositor, so it's opt-in. It's isolated from whatever session you run it from:
+Two further test files run the real desktop stack: a private headless KWin with the real portal, KDE backend, shortcuts, consent dialogs, clipboard tools and a real terminal window. They press real keys inside that session, with only the microphone replaced. `gui_nested` also runs the real app with a real panel and tray, clicks its real buttons, asks the compositor where its windows are and which has focus, and leaves screenshots in `/tmp/wispx-ui-review/`. They start a compositor, so they're opt-in, and they're isolated from whatever session you run them from:
 
 ```sh
 cargo test --test plasma_nested -- --ignored --nocapture --test-threads=1
+cargo test --test gui_nested -- --ignored --nocapture --test-threads=1
 
 # Also with real speech recognition, given a model and a 16 kHz mono WAV
-WISPX_TEST_MODEL=/path/to/ggml-tiny.en.bin WISPX_TEST_WAV=/path/to/jfk.wav \
-  cargo test --test plasma_nested -- --ignored --nocapture --test-threads=1
+export WISPX_TEST_MODEL=/path/to/ggml-tiny.en.bin WISPX_TEST_WAV=/path/to/jfk.wav
+cargo test --test plasma_nested -- --ignored --nocapture --test-threads=1
+cargo test --test gui_nested -- --ignored --nocapture --test-threads=1
 ```
+
+The app draws in software in these tests, so they need no GPU. Set `WISPX_TEST_QT_GPU=1` to run `gui_nested` with the GPU, as on a real desktop.
 
 ```
 src/
@@ -232,9 +282,18 @@ src/
   transcribe/         whisper.cpp and ChatGPT
   config.rs, paths.rs settings and private directories
   doctor.rs           `wispx doctor`
+  hotkey.rs           what the keys mean on Windows, with no system calls
+  win/                everything that talks to Windows: pipes, microphone, keyboard
+                      hook, paste, clipboard, installing, and the Win32 interface
+  app/                the app's logic, with no toolkit: what the windows show and do
+  gui_qt.rs           the app on Linux
+  bin/wispx-gui.rs    the program that starts the app on either system
+ui/                   the pill and settings in QML, and the C++ bridge to Qt
+build.rs              builds the bridge on Linux, and the icon and manifest on Windows
 tests/
   e2e.rs              the real binary against stand-ins
   plasma_nested.rs    the real binary against the real desktop stack
-windows/              the Windows app
-packaging/            desktop entry and systemd unit examples
+  gui_nested.rs       the real app against the real desktop stack
+windows/              the original Windows app
+packaging/            icons, the Windows manifest, and desktop entry and systemd unit examples
 ```

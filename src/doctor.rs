@@ -3,18 +3,27 @@
 //! KWin script, and only looks at the login when ChatGPT is the selected backend.
 
 use crate::audio;
-use crate::config::{Backend, Config, NotifyLevel, Overrides, PasteMode};
+#[cfg(unix)]
+use crate::config::NotifyLevel;
+use crate::config::{Backend, Config, Overrides, PasteMode};
+#[cfg(unix)]
 use crate::dbus::Connection;
-use crate::desktop::clipboard::ToolClipboard;
-use crate::desktop::{SessionKind, kwin, notify, remote};
+use crate::desktop::clipboard::SystemClipboard;
+use crate::desktop::{SessionKind, notify};
+#[cfg(unix)]
+use crate::desktop::{kwin, remote};
 use crate::ipc::{self, ClientError, Request};
 use crate::paths;
+#[cfg(unix)]
 use crate::portal;
 use crate::process::Toolbox;
 use crate::transcribe::{chatgpt, whisper};
+use serde_json::{Value, json};
 use std::path::Path;
+#[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
 const BUS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,8 +33,21 @@ enum Level {
     Fail,
 }
 
+impl Level {
+    fn as_str(self) -> &'static str {
+        match self {
+            Level::Ok => "ok",
+            Level::Warn => "warn",
+            Level::Fail => "fail",
+        }
+    }
+}
+
+/// Prints each line as it is found, or collects them for the desktop interface.
+#[derive(Default)]
 struct Report {
     failed: bool,
+    collected: Option<Vec<Value>>,
 }
 
 impl Report {
@@ -38,7 +60,14 @@ impl Report {
                 "[FAIL]"
             }
         };
-        println!("{tag} {name}: {}", detail.as_ref());
+        match &mut self.collected {
+            Some(checks) => checks.push(json!({
+                "name": name,
+                "level": level.as_str(),
+                "detail": detail.as_ref(),
+            })),
+            None => println!("{tag} {name}: {}", detail.as_ref()),
+        }
     }
 
     fn result(&mut self, name: &str, result: Result<String, String>) {
@@ -50,7 +79,7 @@ impl Report {
 }
 
 pub fn run(config_path: &Path, overrides: &Overrides) -> i32 {
-    let mut report = Report { failed: false };
+    let mut report = Report::default();
     let tools = Toolbox::from_env();
 
     let config = Config::load(config_path).and_then(|mut config| {
@@ -74,35 +103,7 @@ pub fn run(config_path: &Path, overrides: &Overrides) -> i32 {
     };
 
     let desktop = SessionKind::detect();
-    check_session(&mut report, &desktop);
-
-    report.result(
-        "recorder",
-        audio::resolve(&config.audio, &tools)
-            .map(|plan| format!("{} (the microphone was not opened)", plan.program.display())),
-    );
-
-    check_backend(&mut report, &config, &tools);
-
-    match (config.paste, ToolClipboard::detect(&desktop, &tools)) {
-        (PasteMode::None, _) => report.line(Level::Ok, "clipboard", "not used (paste is none)"),
-        (_, Ok(clipboard)) => report.line(Level::Ok, "clipboard", clipboard.tool_name()),
-        (_, Err(error)) => report.line(Level::Fail, "clipboard", error),
-    }
-
-    if config.sounds {
-        match notify::player_name(&tools) {
-            Some(name) => report.line(Level::Ok, "sounds", name),
-            None => report.line(
-                Level::Warn,
-                "sounds",
-                "no player found (pw-play, paplay or aplay), so cues stay silent",
-            ),
-        }
-    }
-
-    check_bus_services(&mut report, &config, &desktop);
-    check_desktop_entry(&mut report);
+    check_environment(&mut report, &config, &tools, &desktop);
 
     match ipc::send(&paths::client_socket_path(), Request::Status) {
         Ok(reply) => {
@@ -124,7 +125,7 @@ pub fn run(config_path: &Path, overrides: &Overrides) -> i32 {
             report.line(
                 Level::Warn,
                 "daemon",
-                "not running; start it with `wispx daemon`",
+                "not running; open WispX, or start it with `wispx daemon`",
             );
         }
         Err(ClientError::Failed(error)) => report.line(Level::Warn, "daemon", error),
@@ -133,10 +134,62 @@ pub fn run(config_path: &Path, overrides: &Overrides) -> i32 {
     i32::from(report.failed)
 }
 
+/// The same checks for the desktop interface, using the settings actually in use.
+pub fn collect(config: &Config, tools: &Toolbox, desktop: &SessionKind) -> Vec<Value> {
+    let mut report = Report {
+        failed: false,
+        collected: Some(Vec::new()),
+    };
+    check_environment(&mut report, config, tools, desktop);
+    report.collected.unwrap_or_default()
+}
+
+fn check_environment(report: &mut Report, config: &Config, tools: &Toolbox, desktop: &SessionKind) {
+    check_session(report, desktop);
+
+    report.result(
+        "recorder",
+        audio::resolve(&config.audio, tools)
+            .map(|plan| format!("{} (the microphone was not opened)", plan.describe())),
+    );
+
+    check_backend(report, config, tools);
+
+    match (config.paste, SystemClipboard::detect(desktop, tools)) {
+        (PasteMode::None, _) => report.line(Level::Ok, "clipboard", "not used (paste is none)"),
+        (_, Ok(clipboard)) => report.line(Level::Ok, "clipboard", clipboard.tool_name()),
+        (_, Err(error)) => report.line(Level::Fail, "clipboard", error),
+    }
+
+    if config.sounds {
+        match notify::player_name(tools) {
+            Some(name) => report.line(Level::Ok, "sounds", name),
+            None => report.line(
+                Level::Warn,
+                "sounds",
+                "no player found (pw-play, paplay or aplay), so cues stay silent",
+            ),
+        }
+    }
+
+    #[cfg(unix)]
+    check_bus_services(report, config, desktop);
+    #[cfg(windows)]
+    report.line(
+        Level::Ok,
+        "automatic paste",
+        match config.paste {
+            PasteMode::Auto => "into the window that had focus".to_string(),
+            other => format!("off (paste is {})", other.as_str()),
+        },
+    );
+    check_desktop_entry(report);
+}
+
 fn check_session(report: &mut Report, desktop: &SessionKind) {
     let name = "session";
     match desktop {
-        SessionKind::Wayland { plasma: true, .. } => {
+        SessionKind::Wayland { plasma: true, .. } | SessionKind::Windows => {
             report.line(Level::Ok, name, desktop.describe());
         }
         SessionKind::Wayland { .. } => report.line(
@@ -210,6 +263,7 @@ fn language_warning(model: &Path, language: &str) -> Option<String> {
     None
 }
 
+#[cfg(unix)]
 fn check_bus_services(report: &mut Report, config: &Config, desktop: &SessionKind) {
     let mut bus = match Connection::session() {
         Ok(bus) => bus,
@@ -284,7 +338,9 @@ fn check_bus_services(report: &mut Report, config: &Config, desktop: &SessionKin
         ),
         (true, Some(_), false) => (
             Level::Warn,
-            "not allowed yet. Run `wispx paste-setup` to choose, or keep copy-only".to_string(),
+            "not allowed yet. Use Enable automatic paste in WispX, or run `wispx paste-setup`, \
+             or keep copy-only"
+                .to_string(),
         ),
         (true, Some(version), true) => (
             Level::Ok,
@@ -294,12 +350,13 @@ fn check_bus_services(report: &mut Report, config: &Config, desktop: &SessionKin
     report.line(level, "automatic paste", detail);
 }
 
+#[cfg(unix)]
 fn portal_version(bus: &mut Connection, interface: &str) -> Option<u32> {
     portal::interface_version(bus, interface).ok().flatten()
 }
 
 fn check_desktop_entry(report: &mut Report) {
-    let path = crate::cli::desktop_entry_path();
+    let path = crate::app::install::menu_entry_path();
     match path {
         Ok(path) if path.exists() => {
             report.line(Level::Ok, "desktop entry", path.display().to_string())
@@ -308,8 +365,13 @@ fn check_desktop_entry(report: &mut Report) {
             Level::Warn,
             "desktop entry",
             format!(
-                "{} is missing. Run `wispx setup` so the desktop can name WispX in its dialogs",
-                path.display()
+                "{} is missing. Open WispX or run `wispx setup` so {}",
+                path.display(),
+                if cfg!(windows) {
+                    "WispX appears in the Start menu"
+                } else {
+                    "the desktop can name WispX in its dialogs"
+                }
             ),
         ),
         Err(error) => report.line(Level::Warn, "desktop entry", error),
