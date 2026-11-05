@@ -1,5 +1,8 @@
 # WispX
 
+[![Build](https://github.com/PeytonWDYM/WispX/actions/workflows/build.yml/badge.svg)](https://github.com/PeytonWDYM/WispX/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/PeytonWDYM/WispX)](https://github.com/PeytonWDYM/WispX/releases/latest)
+
 Hold **Ctrl + Win**, talk, let go. What you said gets typed wherever your cursor is.
 
 ChatGPT does the transcription, the same way the Dictate button in the ChatGPT and Codex apps does. WispX uses the login the Codex app already saved on your PC, so there's no API key and no extra sign-in.
@@ -41,6 +44,8 @@ dotnet publish src -c Release
 ```
 
 The exe lands in `src/bin/Release/net9.0-windows/win-x64/publish/`.
+
+GitHub Actions builds every push and pull request; the exe is attached to each run under **Artifacts**. Pushing a tag like `v1.0.1` builds it and publishes a release with `WispX.exe` attached.
 
 ## Layout
 
