@@ -31,7 +31,7 @@ The tray icon has: copy last transcript, sounds, idle pill, start with Windows, 
 ## Notes
 
 - WispX calls ChatGPT's `/backend-api/transcribe` endpoint. It's not a public API, so it can change or break without warning, and using it may go against OpenAI's terms.
-- ChatGPT keeps the audio for 30 days, the same as the app's own dictation.
+- Your audio is uploaded to chatgpt.com. How long this private endpoint keeps it isn't publicly documented, so WispX can't promise anything about retention. OpenAI's [voice dictation FAQ](https://help.openai.com/en/articles/12168547-voice-dictation-faq) describes ChatGPT's general data controls, which may or may not apply here.
 - WispX reads `%USERPROFILE%\.codex\auth.json`. If the token has expired, it refreshes it and writes the new one back so Codex stays signed in.
 - It can't type into apps running as administrator.
 

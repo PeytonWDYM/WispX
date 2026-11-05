@@ -102,6 +102,15 @@ wispx toggle     hands-free, for desktops that can only run a command on key dow
 wispx cancel     to cancel
 ```
 
+On Sway, for example, set `"hotkey": "none"` in WispX's settings and add this to your Sway config. It follows the sway(5) man page, but WispX hasn't been tested on Sway:
+
+```
+bindsym --no-repeat $mod+t exec wispx press
+bindsym --release $mod+t exec wispx release
+bindsym --no-repeat $mod+Shift+t exec wispx toggle
+bindsym --no-repeat $mod+BackSpace exec wispx cancel
+```
+
 ## Settings
 
 `wispx config init` writes the settings to `~/.config/wispx/config.json`, and `wispx reload` applies changes. Unknown settings are rejected, so typos don't silently do nothing.
@@ -140,7 +149,7 @@ wispx backend chatgpt
 
 Before you do:
 
-- **Your audio goes to chatgpt.com.** ChatGPT keeps it for 30 days, the same as the app's own dictation.
+- **Your audio is uploaded to chatgpt.com.** How long this private endpoint keeps it isn't publicly documented, so WispX can't promise anything about retention. OpenAI's [voice dictation FAQ](https://help.openai.com/en/articles/12168547-voice-dictation-faq) describes ChatGPT's general data controls, which may or may not apply here.
 - It calls ChatGPT's `/backend-api/transcribe` endpoint. It's not a public API, so it can change or break without warning, and using it may go against OpenAI's terms.
 - WispX only reads `~/.codex/auth.json`. It never refreshes the login or writes to that file, so it can't interfere with Codex. If the login has expired, opening Codex renews it. The Windows app does refresh it, so this is one difference between them.
 
