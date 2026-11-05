@@ -1,4 +1,4 @@
-//! The only `unsafe` in WispX: three libc calls that std does not expose.
+//! The only `unsafe` in WispX: two libc calls that std does not expose.
 //!
 //! std can deliver neither SIGTERM (only SIGKILL through `Child::kill`) nor
 //! install a signal handler. We need both so recorders can flush their last
@@ -43,25 +43,17 @@ pub fn shutdown_requested() -> bool {
     SHUTDOWN.load(Ordering::SeqCst)
 }
 
-/// Sends `sig` to one process.
-pub fn signal_process(pid: u32, sig: i32) -> io::Result<()> {
-    send(i32::try_from(pid).map_err(|_| invalid_pid())?, sig)
-}
-
 /// Sends `sig` to the process group led by `pid`, reaching wrapper scripts'
-/// children as well as the wrapper itself.
+/// children as well as the wrapper itself. Only call this before waiting for
+/// `pid`: after that its number may belong to someone else.
 pub fn signal_group(pid: u32, sig: i32) -> io::Result<()> {
-    let pid = i32::try_from(pid).map_err(|_| invalid_pid())?;
-    send(-pid, sig)
-}
-
-fn send(pid: i32, sig: i32) -> io::Result<()> {
+    let group = i32::try_from(pid).map_err(|_| invalid_pid())?;
     // Never let a zero or a stray -1 become "every process we may signal".
-    if pid == 0 || pid == -1 {
+    if group <= 1 {
         return Err(invalid_pid());
     }
     // SAFETY: `kill` takes plain integers and reports failure through errno.
-    let result = unsafe { kill(pid, sig) };
+    let result = unsafe { kill(-group, sig) };
     if result == 0 {
         Ok(())
     } else {
@@ -79,7 +71,6 @@ mod tests {
 
     #[test]
     fn refuses_pids_that_would_broadcast() {
-        assert!(signal_process(0, SIGTERM).is_err());
         assert!(signal_group(1, SIGTERM).is_err());
         assert!(signal_group(0, SIGTERM).is_err());
     }

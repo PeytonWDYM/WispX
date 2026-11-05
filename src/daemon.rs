@@ -41,6 +41,8 @@ const CAPTURE_MARGIN_SECS: u64 = 5;
 const SHUTDOWN_JOB_WAIT: Duration = Duration::from_millis(1500);
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(1);
 const NOTE_FLUSH: Duration = Duration::from_millis(500);
+/// Long enough for a stop just requested to finish its grace period.
+const SHUTDOWN_STOPS: Duration = Duration::from_secs(1);
 const JOB_PREFIX: &str = "job-";
 
 pub struct Options {
@@ -703,6 +705,7 @@ impl Daemon {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
+        audio::wait_for_stops(SHUTDOWN_STOPS);
         self.feedback.clear_and_wait(NOTE_FLUSH);
         remove_job_files(&self.runtime);
         notify::remove_cue_files(&self.runtime);

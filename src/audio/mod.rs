@@ -17,7 +17,7 @@ use std::io::{self, Read};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -27,6 +27,9 @@ use std::time::{Duration, Instant};
 const STOP_GRACE: Duration = Duration::from_millis(800);
 /// How long to wait for the last samples once a stop was requested.
 const FINISH_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Stops still inside their grace period. See [`wait_for_stops`].
+static STOPPING: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecorderPlan {
@@ -275,7 +278,7 @@ impl Recording {
     }
 
     /// Turns the microphone off now, without blocking. Samples stay available
-    /// for `finish`, and a tool ignoring SIGTERM is killed in the background.
+    /// for `finish`, and whatever ignores SIGTERM is killed in the background.
     pub fn request_stop(&mut self) {
         if let Some(child) = self.child.take() {
             stop_in_background(child, self.pid);
@@ -331,21 +334,35 @@ fn read_samples(mut pipe: impl Read, shared: &Mutex<Shared>, max_bytes: usize) {
     }
 }
 
+/// Stops the whole process group, so a wrapper script that exits first cannot
+/// leave the real recorder running. Everyone gets SIGTERM and can flush, and
+/// whatever is left when the grace period ends gets SIGKILL.
+///
+/// The group's ID is `child`'s process ID, so `child` is only waited for after the
+/// last signal. Until then even a child that exited long ago holds on to that ID
+/// as a zombie, which means these signals can never reach some unrelated group
+/// that was given the ID later. It also means the grace period always runs in
+/// full, since the group can't be seen to be empty while the zombie is in it.
 fn stop_in_background(mut child: Child, pid: u32) {
-    let _ = sys::signal_process(pid, sys::SIGTERM);
+    let _ = sys::signal_group(pid, sys::SIGTERM);
+    STOPPING.fetch_add(1, Ordering::SeqCst);
     thread::spawn(move || {
-        let deadline = Instant::now() + STOP_GRACE;
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) | Err(_) => return,
-                Ok(None) if Instant::now() >= deadline => break,
-                Ok(None) => thread::sleep(Duration::from_millis(10)),
-            }
-        }
+        thread::sleep(STOP_GRACE);
         let _ = sys::signal_group(pid, sys::SIGKILL);
+        // In case it moved itself to another group.
         let _ = child.kill();
+        STOPPING.fetch_sub(1, Ordering::SeqCst);
         let _ = child.wait();
     });
+}
+
+/// Waits for stops still in their grace period, up to `limit`. Exiting cuts their
+/// threads short, which would leave anything ignoring SIGTERM recording.
+pub fn wait_for_stops(limit: Duration) {
+    let deadline = Instant::now() + limit;
+    while STOPPING.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[cfg(test)]
@@ -545,6 +562,97 @@ mod tests {
         recording.request_stop();
         let proc = format!("/proc/{}", pid.trim());
         assert!(wait_for(|| !Path::new(&proc).exists()), "recorder survived");
+    }
+
+    /// Exited and not just a zombie waiting for whoever adopted it to notice.
+    fn process_gone(pid: &str) -> bool {
+        fs::read_to_string(format!("/proc/{}/stat", pid.trim())).map_or(true, |stat| {
+            stat.rsplit(')')
+                .next()
+                .is_some_and(|rest| rest.trim_start().starts_with('Z'))
+        })
+    }
+
+    fn read_pid(path: &Path) -> String {
+        assert!(wait_for(
+            || fs::read_to_string(path).is_ok_and(|text| !text.trim().is_empty())
+        ));
+        fs::read_to_string(path).unwrap()
+    }
+
+    /// Exits at once, leaving behind a child that ignores SIGTERM, since an ignored
+    /// signal stays ignored across exec.
+    fn stubborn_wrapper(temp: &TempDir, pid_file: &Path) -> PathBuf {
+        temp.script(
+            "wrapper",
+            &format!(
+                "trap '' TERM\nsleep 60 &\necho $! > {}\nexit 0",
+                pid_file.display()
+            ),
+        )
+    }
+
+    #[test]
+    fn a_recorder_outliving_its_wrapper_still_flushes_and_stops() {
+        let temp = TempDir::new();
+        let pid_file = temp.path().join("capture");
+        let script = temp.script(
+            "wrapper",
+            &format!(
+                "sh -c 'echo $$ > {}; trap \"printf TAIL; exit 0\" TERM; printf HEAD; \
+                 while :; do sleep 0.02; done' &\nexit 0",
+                pid_file.display()
+            ),
+        );
+        let recording = Recording::start(&plan_for(script), 1024).unwrap();
+        let shared = Arc::clone(&recording.shared);
+        assert!(wait_for(|| shared.lock().unwrap().pcm.len() == 4));
+        let pid = read_pid(&pid_file);
+        assert!(!process_gone(&pid));
+
+        let captured = recording.finish();
+        assert_eq!(captured.pcm, b"HEADTAIL");
+        assert!(wait_for(|| process_gone(&pid)), "the capture survived");
+    }
+
+    #[test]
+    fn a_stubborn_recorder_outliving_its_wrapper_is_killed() {
+        let temp = TempDir::new();
+        let pid_file = temp.path().join("capture");
+        let script = stubborn_wrapper(&temp, &pid_file);
+        let mut recording = Recording::start(&plan_for(script), 1024).unwrap();
+        let pid = read_pid(&pid_file);
+        assert!(!process_gone(&pid));
+
+        // Dropping must not call off what stopping has started.
+        recording.request_stop();
+        drop(recording);
+        assert!(wait_for(|| process_gone(&pid)), "the capture survived");
+    }
+
+    #[test]
+    fn waiting_for_stops_lasts_until_the_grace_period_is_over() {
+        let temp = TempDir::new();
+        let pid_file = temp.path().join("capture");
+        let script = stubborn_wrapper(&temp, &pid_file);
+        let mut recording = Recording::start(&plan_for(script), 1024).unwrap();
+        let pid = read_pid(&pid_file);
+        let started = Instant::now();
+        recording.request_stop();
+        wait_for_stops(STOP_GRACE * 10);
+        assert!(started.elapsed() >= STOP_GRACE);
+        assert!(wait_for(|| process_gone(&pid)), "the capture survived");
+    }
+
+    #[test]
+    fn dropping_reaches_what_a_wrapper_left_running() {
+        let temp = TempDir::new();
+        let pid_file = temp.path().join("capture");
+        let script = stubborn_wrapper(&temp, &pid_file);
+        let recording = Recording::start(&plan_for(script), 1024).unwrap();
+        let pid = read_pid(&pid_file);
+        drop(recording);
+        assert!(wait_for(|| process_gone(&pid)), "the capture survived");
     }
 
     #[test]

@@ -671,6 +671,28 @@ fn stopping_while_recording_turns_the_microphone_off() {
 }
 
 #[test]
+fn quitting_waits_for_a_recorder_that_outlived_its_wrapper() {
+    let mut sandbox = Sandbox::new();
+    let r = sandbox.root.display();
+    // Exiting ends the recording, and leaves behind a child ignoring SIGTERM.
+    sandbox.tool(
+        "pw-record",
+        &format!(
+            "trap '' TERM\nsleep 60 >/dev/null 2>&1 &\necho $! > {r}/capture.pid\n\
+             cat {r}/loud.raw\nsleep 0.2\nexit 0"
+        ),
+    );
+    sandbox.start_daemon(&[]);
+    sandbox.ok(&["press"]);
+    let capture = sandbox.pid_of("capture.pid");
+    sandbox.wait_for_clipboard(TRANSCRIPT);
+
+    sandbox.ok(&["quit"]);
+    assert_eq!(sandbox.wait_for_exit(), 0);
+    wait_until("the capture to be killed", || !process_alive(capture));
+}
+
+#[test]
 fn clients_report_a_missing_daemon_distinctly() {
     let sandbox = Sandbox::new();
     for command in ["press", "status", "cancel", "last", "quit"] {
