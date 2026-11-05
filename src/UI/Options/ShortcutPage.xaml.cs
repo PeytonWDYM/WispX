@@ -4,7 +4,7 @@ using System.Windows.Controls;
 
 namespace WispX
 {
-    /// <summary>Captures physical modifiers through the global hook, then saves a valid chord immediately.</summary>
+    /// <summary>Captures physical shortcuts through the global hook, then saves a valid chord immediately.</summary>
     public partial class ShortcutPage : UserControl
     {
         private readonly Settings _settings;

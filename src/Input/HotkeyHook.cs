@@ -9,7 +9,7 @@ namespace WispX
 {
     internal enum HotkeyEvent { Start, Lock, Release, StopLocked, CancelSilent, Cancel }
 
-    /// <summary>Global hold/lock dictation and modifier capture, on a dedicated keyboard-hook thread.</summary>
+    /// <summary>Global hold/lock dictation and shortcut capture, on a dedicated keyboard-hook thread.</summary>
     internal sealed class HotkeyHook : IDisposable
     {
         private readonly Action<HotkeyEvent> _raise;
@@ -18,6 +18,7 @@ namespace WispX
         private IntPtr _hook;
         private LowLevelKeyboardProc _proc; // root the native callback
         private readonly HashSet<int> _held = new();
+        private readonly HashSet<int> _pressed = new(), _swallowed = new();
         private readonly object _captureGate = new();
         private Action<Hotkey> _capture;
         private int[] _largest = Array.Empty<int>();
@@ -72,9 +73,11 @@ namespace WispX
             // Low-level hooks normally report sided keys; normalize the generic variants too.
             vk = vk switch { VK_CONTROL => VK_LCONTROL, VK_MENU => VK_LMENU, VK_SHIFT => VK_LSHIFT, _ => vk };
             bool modifier = WispX.Hotkey.IsModifier(vk);
+            bool repeat = false;
             lock (_captureGate)
             {
                 if (modifier) { if (down) _held.Add(vk); else if (up) _held.Remove(vk); }
+                else { if (down) repeat = !_pressed.Add(vk); else if (up) _pressed.Remove(vk); }
                 if (_capture != null)
                 {
                     if (modifier && down)
@@ -82,12 +85,12 @@ namespace WispX
                         MaskStartMenu();
                         if (_held.Count > _largest.Length) _largest = _held.ToArray();
                     }
-                    if (down && vk == VK_ESCAPE || modifier && up && _held.Count == 0 && _largest.Length > 0)
+                    if (down && !modifier || modifier && up && _held.Count == 0 && _largest.Length > 0)
                     {
                         var done = _capture;
                         _capture = null;
-                        _swallowEscUp = vk == VK_ESCAPE;
-                        done(vk == VK_ESCAPE ? null : new Hotkey(_largest));
+                        if (!modifier) _swallowed.Add(vk);
+                        done(vk == VK_ESCAPE ? null : new Hotkey(modifier ? _largest : _held.Append(vk).ToArray()));
                     }
                     return new IntPtr(1);
                 }
@@ -96,9 +99,23 @@ namespace WispX
             bool swallow = false;
             var hotkey = _hotkey;
             bool matches = hotkey.Matches(_held);
+            // Own the main key until its physical release, even after cancellation or a modifier release.
+            if (_swallowed.Contains(vk))
+            {
+                if (up)
+                {
+                    _swallowed.Remove(vk);
+                    if (_comboHeld && vk == hotkey.MainKey)
+                    {
+                        _comboHeld = false;
+                        if (_active && !_locked) { _active = false; Fire(HotkeyEvent.Release); }
+                    }
+                }
+                return new IntPtr(1);
+            }
             if (modifier)
             {
-                if (down && matches && !_comboHeld)
+                if (hotkey.MainKey == null && down && matches && !_comboHeld)
                 {
                     _comboHeld = true;
                     if (hotkey.MasksMenu) MaskStartMenu();
@@ -110,6 +127,14 @@ namespace WispX
                     _comboHeld = false;
                     if (_active && !_locked) { _active = false; Fire(HotkeyEvent.Release); }
                 }
+            }
+            else if (down && !repeat && vk == hotkey.MainKey && matches && !hotkey.HasExtraModifiers(_held))
+            {
+                _comboHeld = true;
+                _swallowed.Add(vk); swallow = true;
+                if (hotkey.MasksMenu) MaskStartMenu();
+                if (_locked) { _locked = false; _active = false; Fire(HotkeyEvent.StopLocked); }
+                else if (!_active) { _active = true; Fire(HotkeyEvent.Start); }
             }
             else if (vk == VK_ESCAPE)
             {
