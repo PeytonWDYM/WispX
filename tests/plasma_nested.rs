@@ -15,6 +15,8 @@
 //! display, and cannot reach the desktop session it may be started from. Nothing
 //! here uses the ambient session bus or the ambient Wayland display.
 
+#![cfg(unix)]
+
 #[allow(dead_code)]
 #[path = "support/nested.rs"]
 mod nested;

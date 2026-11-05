@@ -15,6 +15,8 @@
 //! and session bus, and connects only to the private compositor. Screenshots of
 //! real states go to /tmp/wispx-ui-review/.
 
+#![cfg(unix)]
+
 #[allow(dead_code)]
 #[path = "support/nested.rs"]
 mod nested;

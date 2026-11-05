@@ -20,7 +20,10 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const ENDPOINT: &str = "https://chatgpt.com/backend-api/transcribe";
+#[cfg(unix)]
 const USER_AGENT: &str = concat!("WispX/", env!("CARGO_PKG_VERSION"), " (Linux)");
+#[cfg(windows)]
+const USER_AGENT: &str = concat!("WispX/", env!("CARGO_PKG_VERSION"), " (Windows)");
 const ORIGINATOR: &str = "codex_desktop";
 const EXPIRY_MARGIN_SECS: u64 = 60;
 const CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -428,7 +431,7 @@ pub fn transcribe(
     interpret_response(status, &body)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;

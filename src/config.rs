@@ -68,6 +68,7 @@ string_enum! {
         PwRecord => "pw-record",
         Parec => "parec",
         Arecord => "arecord",
+        WaveIn => "wavein",
     }
 }
 
@@ -458,7 +459,7 @@ fn validate_binary(value: &str) -> Result<String, String> {
     if value.contains('\0') {
         return Err("whisper binary must not contain NUL".to_string());
     }
-    if value.contains('/') {
+    if value.contains('/') || (cfg!(windows) && value.contains('\\')) {
         let path = paths::expand_absolute(value).map_err(|e| format!("whisper binary: {e}"))?;
         return Ok(path.to_string_lossy().into_owned());
     }
@@ -614,7 +615,7 @@ impl Fields {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;

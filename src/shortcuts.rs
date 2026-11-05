@@ -1,14 +1,17 @@
-//! Global shortcuts through the XDG `GlobalShortcuts` portal.
-//!
-//! This is what makes hold-to-talk work on Plasma without reading the keyboard:
+//! Global shortcuts. On Linux they go through the XDG `GlobalShortcuts` portal,
+//! which is what makes hold-to-talk work on Plasma without reading the keyboard:
 //! the desktop owns the keys, asks the user once to confirm them, and tells us
-//! when each shortcut goes down and comes back up.
+//! when each shortcut goes down and comes back up. Windows has a keyboard hook
+//! instead, in `crate::win::hook`, with the original app's fixed keys.
 
 use crate::config::ShortcutsConfig;
+#[cfg(unix)]
 use crate::dbus::{Connection, Error, Message, Value};
+#[cfg(unix)]
 use crate::portal::{self, Response};
 use crate::session::Input;
 use std::sync::Arc;
+#[cfg(unix)]
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -16,15 +19,21 @@ pub const HOLD: &str = "dictate";
 pub const HANDS_FREE: &str = "hands-free";
 pub const CANCEL: &str = "cancel";
 
+#[cfg(unix)]
 const INTERFACE: &str = "org.freedesktop.portal.GlobalShortcuts";
+#[cfg(unix)]
 const RETRY_AFTER: Duration = Duration::from_secs(5);
+#[cfg(unix)]
 /// Each failed attempt could put a dialog on screen, so they soon slow right down.
 const RETRY_LIMIT: Duration = Duration::from_secs(300);
+#[cfg(unix)]
 /// A session that lasted this long was working, so what ended it was not the
 /// same failure happening again.
 const HEALTHY_SESSION: Duration = Duration::from_secs(60);
+#[cfg(unix)]
 /// Long enough for someone to read and answer the confirmation dialog.
 const DIALOG_WAIT: Duration = Duration::from_secs(600);
+#[cfg(unix)]
 const CALL_WAIT: Duration = Duration::from_secs(30);
 const IDLE_WAIT: Duration = Duration::from_secs(1);
 /// See [`Translator`].
@@ -43,6 +52,18 @@ pub enum Status {
 }
 
 impl Status {
+    #[cfg(windows)]
+    pub fn describe(&self) -> String {
+        match self {
+            Status::Starting => "installing the keyboard hook".to_string(),
+            Status::Bound(triggers) => format!("shortcuts: {triggers}"),
+            Status::Unavailable(reason) => format!("no shortcuts: {reason}"),
+            Status::Declined => "shortcuts turned off".to_string(),
+            Status::Disconnected(reason) => format!("shortcuts stopped: {reason}"),
+        }
+    }
+
+    #[cfg(unix)]
     pub fn describe(&self) -> String {
         match self {
             Status::Starting => "connecting to the GlobalShortcuts portal".to_string(),
@@ -119,6 +140,14 @@ impl Translator {
     }
 }
 
+/// Installs the keyboard hook on its own thread for the life of the daemon. Its
+/// keys are the original app's, which nothing asks anyone to confirm.
+#[cfg(windows)]
+pub fn spawn(_config: ShortcutsConfig, sink: Sink) {
+    crate::win::hook::spawn(sink);
+}
+
+#[cfg(unix)]
 /// Runs the portal session on its own thread for the life of the daemon.
 pub fn spawn(config: ShortcutsConfig, sink: Sink) {
     thread::spawn(move || {
@@ -145,6 +174,7 @@ pub fn spawn(config: ShortcutsConfig, sink: Sink) {
     });
 }
 
+#[cfg(unix)]
 fn next_retry(previous: Duration, session_lasted: Duration) -> Duration {
     if session_lasted >= HEALTHY_SESSION {
         RETRY_AFTER
@@ -153,17 +183,20 @@ fn next_retry(previous: Duration, session_lasted: Duration) -> Duration {
     }
 }
 
+#[cfg(unix)]
 enum Stop {
     Unavailable(String),
     Lost(String),
 }
 
+#[cfg(unix)]
 impl From<Error> for Stop {
     fn from(error: Error) -> Self {
         Stop::Lost(error.to_string())
     }
 }
 
+#[cfg(unix)]
 /// Only ever ends by losing the session, one way or another.
 fn run_session(config: &ShortcutsConfig, sink: &Sink, translator: &mut Translator) -> Stop {
     match listen(config, sink, translator) {
@@ -172,6 +205,7 @@ fn run_session(config: &ShortcutsConfig, sink: &Sink, translator: &mut Translato
     }
 }
 
+#[cfg(unix)]
 fn listen(
     config: &ShortcutsConfig,
     sink: &Sink,
@@ -227,6 +261,7 @@ fn listen(
     }
 }
 
+#[cfg(unix)]
 fn create_session(bus: &mut Connection) -> Result<String, Stop> {
     // A stable token gives Plasma a stable identity even without a registered
     // application, so shortcuts are not requested anew on every start.
@@ -254,6 +289,7 @@ fn create_session(bus: &mut Connection) -> Result<String, Stop> {
     }
 }
 
+#[cfg(unix)]
 /// The `a(sa{sv})` list describing WispX's shortcuts.
 pub fn shortcut_list(config: &ShortcutsConfig) -> Value {
     let entry = |id: &str, description: &str, trigger: &str| {
@@ -279,6 +315,7 @@ pub fn shortcut_list(config: &ShortcutsConfig) -> Value {
     }
 }
 
+#[cfg(unix)]
 fn bind(bus: &mut Connection, session: &str, config: &ShortcutsConfig) -> Result<Status, Stop> {
     let arguments = vec![Value::path(session), shortcut_list(config), Value::str("")];
     let response = portal::request(
@@ -300,6 +337,7 @@ fn bind(bus: &mut Connection, session: &str, config: &ShortcutsConfig) -> Result
     })
 }
 
+#[cfg(unix)]
 /// The user changed the keys in System Settings. What the interface shows must
 /// follow, since it promises the keys that really work.
 fn changed_triggers(message: &Message, session: &str) -> Option<Status> {
@@ -314,6 +352,7 @@ fn changed_triggers(message: &Message, session: &str) -> Option<Status> {
     Some(Status::Bound(describe_list(items)))
 }
 
+#[cfg(unix)]
 /// "hands-free: Meta+Ctrl+Space, ..." from a `BindShortcuts` result.
 fn describe_triggers(results: &Value) -> String {
     let Some(Value::Array { items, .. }) = results.lookup("shortcuts") else {
@@ -342,6 +381,7 @@ pub fn parse_triggers(text: &str) -> Vec<(String, String)> {
     found
 }
 
+#[cfg(unix)]
 fn describe_list(items: &[Value]) -> String {
     let mut parts: Vec<String> = items
         .iter()
@@ -367,6 +407,7 @@ fn describe_list(items: &[Value]) -> String {
     }
 }
 
+#[cfg(unix)]
 fn handle_signal(
     message: &Message,
     session: &str,
@@ -389,7 +430,7 @@ fn handle_signal(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

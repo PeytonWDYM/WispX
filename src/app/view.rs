@@ -198,6 +198,28 @@ fn speech_row(model: &Model) -> Value {
     let Some(check) = model.check("backend") else {
         return row(id, title, "wait", "Checking…", vec![]);
     };
+    // Windows has no package for this, so the download is one click away too.
+    if cfg!(windows)
+        && !chatgpt
+        && check["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("not found"))
+    {
+        if model.download.is_some() {
+            return row(id, title, "busy", "Downloading whisper.cpp.", vec![]);
+        }
+        return row(
+            id,
+            title,
+            "fail",
+            "whisper.cpp, which turns speech into text on this computer, isn't here yet.",
+            vec![button(
+                "download-whisper",
+                "Download whisper.cpp (9 MB)",
+                true,
+            )],
+        );
+    }
     let mut level = match check["level"].as_str() {
         Some("fail") => "fail",
         Some("warn") => "warn",
@@ -280,7 +302,11 @@ fn shortcuts_row(model: &Model) -> Value {
             "shortcuts",
             title,
             "busy",
-            "Waiting for you to confirm them in the desktop's dialog.",
+            if cfg!(windows) {
+                "Starting them…"
+            } else {
+                "Waiting for you to confirm them in the desktop's dialog."
+            },
             vec![],
         ),
         "declined" => row(
@@ -622,7 +648,7 @@ pub fn tray(model: &Model) -> Value {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;

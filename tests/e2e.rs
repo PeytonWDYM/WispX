@@ -7,6 +7,8 @@
 //! Each test clears the environment and gets scratch XDG directories, so nothing
 //! reaches the microphone, network, Codex login, clipboard or desktop session.
 
+#![cfg(unix)]
+
 #[allow(dead_code)]
 #[path = "../src/dbus.rs"]
 mod dbus;

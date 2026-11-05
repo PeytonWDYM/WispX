@@ -8,12 +8,10 @@
 
 use crate::audio::{self, RecorderPlan, Recording, wav};
 use crate::config::{self, Backend, Config, HotkeyMode, Overrides, PasteMode};
-use crate::desktop::SessionKind;
-use crate::desktop::clipboard::{Clipboard, ToolClipboard};
-use crate::desktop::kwin::FocusInfo;
+use crate::desktop::clipboard::{Clipboard, SystemClipboard};
 use crate::desktop::notify::{self, Feedback, Note};
 use crate::desktop::paste::{self, CopyReason, Delivered, Delivery, Injector, Timing};
-use crate::desktop::remote::{self, PlasmaInjector, SetupOutcome};
+use crate::desktop::{self, FocusInfo, PlatformInjector, SessionKind, SetupOutcome};
 use crate::doctor;
 use crate::ipc::{self, Incoming, Request};
 use crate::paths;
@@ -26,6 +24,7 @@ use crate::transcribe::{self, TranscribeError};
 use serde_json::{Value, json};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -106,6 +105,9 @@ fn stop_when_stdin_closes() {
 
 pub fn run(options: Options) -> i32 {
     sys::install_shutdown_handlers();
+    // Nothing this daemon runs may outlive it, even if it is killed outright.
+    #[cfg(windows)]
+    sys::end_children_with_this_process();
     if options.app_child {
         stop_when_stdin_closes();
     }
@@ -157,17 +159,7 @@ pub fn run(options: Options) -> i32 {
     let tools = Toolbox::from_env();
     let desktop = SessionKind::detect();
     let feedback = Feedback::spawn(runtime.clone(), &tools);
-    let injector = if desktop.is_plasma() {
-        match remote::token_path() {
-            Ok(token_file) => Some(PlasmaInjector::new(runtime.clone(), token_file)),
-            Err(error) => {
-                eprintln!("wispx: automatic paste is off: {error}");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let injector = desktop::platform_injector(&desktop, &runtime);
     if let Some(injector) = &injector
         && config.paste == PasteMode::Auto
     {
@@ -242,7 +234,7 @@ pub fn run(options: Options) -> i32 {
 fn wants_portal(mode: HotkeyMode, desktop: &SessionKind) -> bool {
     match mode {
         HotkeyMode::Portal => true,
-        HotkeyMode::Auto => desktop.is_wayland(),
+        HotkeyMode::Auto => desktop.is_wayland() || desktop.is_windows(),
         HotkeyMode::None => false,
     }
 }
@@ -250,11 +242,11 @@ fn wants_portal(mode: HotkeyMode, desktop: &SessionKind) -> bool {
 /// `Ok(None)` means another daemon holds it. Being a lock rather than a pid file,
 /// it can't go stale, however the last daemon ended.
 pub(crate) fn acquire_lock(path: &Path) -> Result<Option<File>, String> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .mode(0o600)
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let file = options
         .open(path)
         .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
     match file.try_lock() {
@@ -302,7 +294,7 @@ struct Daemon {
     last_transcript: Option<String>,
     last_error: Option<String>,
     hotkey: shortcuts::Status,
-    injector: Option<Arc<PlasmaInjector>>,
+    injector: Option<Arc<PlatformInjector>>,
     quit: bool,
     /// Connections streaming events to a desktop interface.
     watchers: Vec<Watcher>,
@@ -859,7 +851,7 @@ impl Daemon {
         let (desktop, tools) = (self.desktop.clone(), self.tools.clone());
         // Runs a clipboard tool, which may be slow.
         thread::spawn(move || {
-            let result = ToolClipboard::detect(&desktop, &tools)
+            let result = SystemClipboard::detect(&desktop, &tools)
                 .and_then(|clipboard| clipboard.write_text(&text, false));
             let _ = reply.send(match result {
                 Ok(()) => json!({ "ok": true, "message": "Copied" }),
@@ -966,7 +958,7 @@ struct Worker {
     runtime: PathBuf,
     tools: Toolbox,
     desktop: SessionKind,
-    injector: Option<Arc<PlasmaInjector>>,
+    injector: Option<Arc<PlatformInjector>>,
     events: Sender<Event>,
 }
 
@@ -1024,7 +1016,7 @@ impl Worker {
             return JobResult::Cancelled;
         }
 
-        let clipboard = ToolClipboard::detect(&self.desktop, &self.tools);
+        let clipboard = SystemClipboard::detect(&self.desktop, &self.tools);
         let clipboard: Result<&dyn Clipboard, String> = match &clipboard {
             Ok(clipboard) => Ok(clipboard),
             Err(error) => Err(error.clone()),
@@ -1065,7 +1057,7 @@ impl Drop for PrivateAudio {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;

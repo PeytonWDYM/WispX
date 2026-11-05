@@ -13,12 +13,15 @@ use crate::audio;
 use crate::config::{self, Backend, Config};
 use crate::ipc::{self, ClientError, Request};
 use crate::paths;
-use crate::process::{self, Spec, Toolbox};
+use crate::process::Toolbox;
+#[cfg(unix)]
+use crate::process::{self, Spec};
 use crate::sys;
 use serde_json::{Value, json};
+#[cfg(unix)]
 use std::ffi::OsString;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,6 +35,7 @@ const RESTART_PAUSE: Duration = Duration::from_secs(2);
 /// A daemon that ran this long was working, so its end was not a startup failure.
 const HEALTHY_RUN: Duration = Duration::from_secs(60);
 const STOP_LIMIT: Duration = Duration::from_secs(9);
+#[cfg(unix)]
 const DEVICE_LIST_LIMIT: Duration = Duration::from_secs(3);
 /// The most the first look at the settings waits for the shortcuts dialog, in case
 /// it never came. Long enough to read it, and it isn't lost after this.
@@ -86,6 +90,9 @@ pub enum Msg {
     PasteDone(Result<String, String>),
     DownloadProgress(u64),
     DownloadDone(Result<PathBuf, String>),
+    /// Windows: whisper.cpp itself has been fetched.
+    #[cfg(windows)]
+    WhisperDone(Result<(), String>),
     Stopped,
 }
 
@@ -102,7 +109,7 @@ pub struct Controller<U: Ui> {
     overlay: OverlayModel,
     generation: u64,
     owned: Option<Arc<OwnedDaemon>>,
-    closer: Option<UnixStream>,
+    closer: Option<ipc::Stream>,
     connected_at: Option<Instant>,
     restarts: u32,
     restart_at: Option<Instant>,
@@ -272,6 +279,8 @@ impl<U: Ui> Controller<U> {
                 }
             }
             Msg::DownloadDone(result) => self.download_done(result),
+            #[cfg(windows)]
+            Msg::WhisperDone(result) => self.whisper_done(result),
             Msg::Stopped => {}
         }
     }
@@ -598,6 +607,8 @@ impl<U: Ui> Controller<U> {
             },
             "enable-paste" => self.enable_paste(),
             "download-model" => self.start_download(args["id"].as_str().unwrap_or("base")),
+            #[cfg(windows)]
+            "download-whisper" => self.start_whisper_download(),
             "cancel-download" => {
                 if let Some(cancel) = &self.download_cancel {
                     cancel.store(true, Ordering::SeqCst);
@@ -756,6 +767,48 @@ impl<U: Ui> Controller<U> {
         }
     }
 
+    #[cfg(windows)]
+    fn start_whisper_download(&mut self) {
+        if self.model.download.is_some() {
+            return;
+        }
+        self.model.problem = None;
+        self.model.download = Some(DownloadView {
+            label: models::WHISPER_LABEL.to_string(),
+            bytes: models::WHISPER_BYTES,
+            done: 0,
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.download_cancel = Some(Arc::clone(&cancel));
+        let tx = self.tx.clone();
+        let progress = self.tx.clone();
+        thread::spawn(move || {
+            let result = models::download_whisper(&Toolbox::from_env(), &cancel, move |done| {
+                let _ = progress.send(Msg::DownloadProgress(done));
+            });
+            let _ = tx.send(Msg::WhisperDone(result));
+        });
+    }
+
+    #[cfg(windows)]
+    fn whisper_done(&mut self, result: Result<(), String>) {
+        let cancelled = self
+            .download_cancel
+            .take()
+            .is_some_and(|cancel| models::was_cancelled(&cancel));
+        self.model.download = None;
+        match result {
+            Ok(()) => self.refresh(),
+            Err(_) if cancelled => {}
+            Err(error) => self.model.problem = Some(error),
+        }
+    }
+
+    /// The keys are fixed on Windows, as they are in the original app.
+    #[cfg(windows)]
+    fn open_shortcuts(&mut self) {}
+
+    #[cfg(unix)]
     fn open_shortcuts(&mut self) {
         let tools = Toolbox::from_env();
         let result = if let Some(program) = tools.find("systemsettings") {
@@ -771,6 +824,15 @@ impl<U: Ui> Controller<U> {
         self.model.problem = result.err();
     }
 
+    #[cfg(windows)]
+    fn open_config(&mut self) {
+        let result = self
+            .config_path()
+            .and_then(|path| crate::win::shell::open_text_file(&path));
+        self.model.problem = result.err();
+    }
+
+    #[cfg(unix)]
     fn open_config(&mut self) {
         let result = self.config_path().and_then(|path| {
             let program = Toolbox::from_env()
@@ -858,6 +920,7 @@ fn fallback_config() -> Config {
 }
 
 /// Opens something for the user and lets go of it, reaping it when it ends.
+#[cfg(unix)]
 fn spawn_detached(program: &Path, args: &[&str]) -> Result<(), String> {
     let mut child = Command::new(program)
         .args(args)
@@ -872,8 +935,15 @@ fn spawn_detached(program: &Path, args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// The microphones `audio.device` can name, read without opening any of them.
+#[cfg(windows)]
+fn list_devices(_config: &Config) -> Vec<(String, String)> {
+    audio::devices()
+}
+
 /// The microphones `audio.device` can name, read without opening any of them. The
 /// recorder is what has to understand the name, so it decides whether to offer them.
+#[cfg(unix)]
 fn list_devices(config: &Config) -> Vec<(String, String)> {
     let tools = Toolbox::from_env();
     let Ok(plan) = audio::resolve(&config.audio, &tools) else {
@@ -896,6 +966,7 @@ fn list_devices(config: &Config) -> Vec<(String, String)> {
     parse_devices(&output.stdout)
 }
 
+#[cfg(unix)]
 fn parse_devices(stdout: &[u8]) -> Vec<(String, String)> {
     let Ok(Value::Array(sources)) = serde_json::from_slice::<Value>(stdout) else {
         return Vec::new();
@@ -920,7 +991,7 @@ pub fn serve_instance(runtime: &Path, tx: Sender<Msg>) -> Result<(), String> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::sync::Mutex;

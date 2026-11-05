@@ -184,11 +184,7 @@ fn open(
     Ok(Some(Session { bus, handle }))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SetupOutcome {
-    Granted,
-    Declined,
-}
+pub use super::SetupOutcome;
 
 /// The paste path on Plasma: KWin for focus, the portal for keys.
 pub struct PlasmaInjector {

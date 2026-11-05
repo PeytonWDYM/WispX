@@ -17,16 +17,11 @@ const SCRIPTING_PATH: &str = "/Scripting";
 const SCRIPTING_INTERFACE: &str = "org.kde.kwin.Scripting";
 const SCRIPT_INTERFACE: &str = "org.kde.kwin.Script";
 const REPORT_METHOD: &str = "result";
+pub use super::FocusInfo;
+
 const TIMEOUT: Duration = Duration::from_secs(2);
 
 static NEXT_SCRIPT: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FocusInfo {
-    /// Unique for each window, unlike its title or class.
-    pub id: String,
-    pub class: String,
-}
 
 fn script_source(unique_name: &str) -> String {
     format!(

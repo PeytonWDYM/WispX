@@ -2,20 +2,24 @@
 //! exception is `watch`, whose connection stays open and carries a JSON line for
 //! everything the desktop interface has to show.
 //!
-//! The socket lives in a 0700 directory, so only this user can reach it.
+//! On Unix the socket lives in a 0700 directory, so only this user can reach it.
+//! On Windows it is a named pipe that only this user may open.
 
 use crate::config::Backend;
 use serde_json::{Value, json};
-use std::fs::{self, Permissions};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+pub use std::os::unix::net::{UnixListener as Listener, UnixStream as Stream};
+
+#[cfg(windows)]
+pub use crate::win::pipe::{PipeListener as Listener, PipeStream as Stream};
 
 const MAX_REQUEST: u64 = 4 * 1024;
 /// A reply can carry the whole transcript.
@@ -133,14 +137,24 @@ pub fn failure(message: impl Into<String>) -> Value {
 
 /// Binds the socket. Call only while holding the instance lock, since this
 /// removes whatever socket a previous daemon left behind.
-pub fn bind(path: &Path) -> io::Result<UnixListener> {
+#[cfg(unix)]
+pub fn bind(path: &Path) -> io::Result<Listener> {
+    use std::fs::{self, Permissions};
+    use std::os::unix::fs::PermissionsExt;
+
     match fs::remove_file(path) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
         _ => {}
     }
-    let listener = UnixListener::bind(path)?;
+    let listener = Listener::bind(path)?;
     fs::set_permissions(path, Permissions::from_mode(0o600))?;
     Ok(listener)
+}
+
+/// A pipe goes when its last handle does, so nothing is ever left behind.
+#[cfg(windows)]
+pub fn bind(path: &Path) -> io::Result<Listener> {
+    Listener::bind(path)
 }
 
 /// Counts connections in progress so shutdown can finish replying first.
@@ -165,10 +179,7 @@ impl Drop for Active {
 }
 
 /// Accepts connections on a background thread and hands each request to `send`.
-pub fn serve(
-    listener: UnixListener,
-    send: impl Fn(Incoming) + Send + Sync + 'static,
-) -> Connections {
+pub fn serve(listener: Listener, send: impl Fn(Incoming) + Send + Sync + 'static) -> Connections {
     let connections = Connections::default();
     let counter = connections.0.clone();
     let send = Arc::new(send);
@@ -190,7 +201,7 @@ pub fn serve(
     connections
 }
 
-fn handle(stream: UnixStream, send: &(impl Fn(Incoming) + ?Sized)) {
+fn handle(stream: Stream, send: &(impl Fn(Incoming) + ?Sized)) {
     let _ = stream.set_read_timeout(Some(SOCKET_IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(SOCKET_IO_TIMEOUT));
     let mut line = String::new();
@@ -226,7 +237,7 @@ fn handle(stream: UnixStream, send: &(impl Fn(Incoming) + ?Sized)) {
 
 /// Writes each event as it comes, until the daemon drops the sender or the client
 /// hangs up. Returning drops the receiver, and that is how the daemon finds out.
-fn stream_replies(stream: &UnixStream, events: &mpsc::Receiver<Value>) {
+fn stream_replies(stream: &Stream, events: &mpsc::Receiver<Value>) {
     let _ = stream.set_nonblocking(true);
     loop {
         match events.recv_timeout(WATCH_POLL) {
@@ -257,7 +268,7 @@ fn stream_replies(stream: &UnixStream, events: &mpsc::Receiver<Value>) {
 
 /// An open `watch` connection, read a line at a time.
 pub struct Watch {
-    reader: BufReader<UnixStream>,
+    reader: BufReader<Stream>,
 }
 
 impl Watch {
@@ -293,13 +304,13 @@ impl Watch {
     }
 
     /// Ends the connection from another thread, which unblocks `next_event`.
-    pub fn closer(&self) -> Option<UnixStream> {
+    pub fn closer(&self) -> Option<Stream> {
         self.reader.get_ref().try_clone().ok()
     }
 }
 
-fn connect(socket: &Path) -> Result<UnixStream, ClientError> {
-    UnixStream::connect(socket).map_err(|error| match error.kind() {
+fn connect(socket: &Path) -> Result<Stream, ClientError> {
+    Stream::connect(socket).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => ClientError::NotRunning,
         _ => ClientError::Failed(format!("cannot reach the daemon: {error}")),
     })
@@ -339,11 +350,13 @@ pub fn send(socket: &Path, request: Request) -> Result<Value, ClientError> {
         .map_err(|_| ClientError::Failed("the daemon sent an invalid reply".to_string()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
-    use std::os::unix::fs::FileTypeExt;
+    use std::fs;
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+    use std::os::unix::net::{UnixListener, UnixStream};
 
     fn all() -> Vec<Request> {
         vec![

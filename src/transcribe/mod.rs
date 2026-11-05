@@ -59,7 +59,7 @@ pub fn precheck(config: &Config, tools: &Toolbox) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;

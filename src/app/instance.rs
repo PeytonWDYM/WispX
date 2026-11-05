@@ -8,7 +8,6 @@ use crate::paths;
 use serde_json::{Value, json};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
@@ -55,7 +54,7 @@ pub fn serve(
     Ok(())
 }
 
-fn answer(stream: &UnixStream, handler: &(impl Fn(String, Sender<Value>) + ?Sized)) {
+fn answer(stream: &ipc::Stream, handler: &(impl Fn(String, Sender<Value>) + ?Sized)) {
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
     let mut line = String::new();
@@ -76,8 +75,13 @@ fn answer(stream: &UnixStream, handler: &(impl Fn(String, Sender<Value>) + ?Size
 
 /// Sends a command to the running app, if there is one.
 pub fn send(command: &str) -> Result<Value, ClientError> {
+    // Windows only lets the running copy come forward if the one just started says so.
+    #[cfg(windows)]
+    if command.starts_with("show") {
+        crate::sys::allow_foreground();
+    }
     let socket = paths::client_socket_path().with_file_name("app.sock");
-    let stream = UnixStream::connect(socket).map_err(|error| match error.kind() {
+    let stream = ipc::Stream::connect(socket).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => ClientError::NotRunning,
         _ => ClientError::Failed(format!("cannot reach the WispX app: {error}")),
     })?;

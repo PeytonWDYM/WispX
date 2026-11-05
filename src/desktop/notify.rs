@@ -1,32 +1,50 @@
-//! Feedback: desktop notifications in place of the Windows overlay, plus cues.
+//! Feedback: desktop notifications when no app is there to show them, plus cues.
 //!
 //! Each runs on its own thread, so a slow notification server or sound system
 //! can never delay dictation. Transcripts never go into notifications, because
 //! notification history is stored and may be shown on a lock screen.
 
 use crate::config::NotifyLevel;
+#[cfg(unix)]
 use crate::dbus::{Connection, Value};
+#[cfg(unix)]
 use crate::paths;
-use crate::process::{self, Spec, Toolbox};
+use crate::process::Toolbox;
+#[cfg(unix)]
+use crate::process::{self, Spec};
 use crate::sounds::Cue;
+#[cfg(unix)]
 use std::ffi::OsString;
 use std::fs;
+#[cfg(unix)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+#[cfg(unix)]
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
+#[cfg(unix)]
 const BUS_NAME: &str = "org.freedesktop.Notifications";
+#[cfg(unix)]
 const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
+#[cfg(unix)]
 const CALL_TIMEOUT: Duration = Duration::from_secs(2);
 /// Quick taps are not worth a popup; they usually end before this.
+#[cfg(unix)]
 const RECORDING_DELAY: Duration = Duration::from_millis(400);
+#[cfg(unix)]
 const RECONNECT_PAUSE: Duration = Duration::from_secs(5);
+#[cfg(unix)]
 const SOUND_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(unix)]
 const IDLE: Duration = Duration::from_secs(3600);
 /// Replaced or closed long before this. The cap only matters if the daemon dies
 /// without getting to close the popup.
+#[cfg(unix)]
 const UNTIL_REPLACED_MS: i32 = 30 * 60 * 1000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +68,7 @@ impl Note {
     }
 
     /// (summary, body, milliseconds on screen)
+    #[cfg(unix)]
     fn content(&self) -> Option<(&str, &str, i32)> {
         match self {
             Note::Recording { locked: false } => Some(("Recording", "", UNTIL_REPLACED_MS)),
@@ -78,12 +97,22 @@ pub struct Feedback {
 }
 
 impl Feedback {
+    #[cfg(unix)]
     pub fn spawn(runtime: PathBuf, tools: &Toolbox) -> Self {
         let (notes, note_rx) = mpsc::channel();
         let (sounds, sound_rx) = mpsc::channel();
         thread::spawn(move || notification_loop(note_rx));
         let player = find_player(tools);
         thread::spawn(move || sound_loop(sound_rx, player, runtime));
+        Feedback { notes, sounds }
+    }
+
+    #[cfg(windows)]
+    pub fn spawn(_runtime: PathBuf, _tools: &Toolbox) -> Self {
+        let (notes, note_rx) = mpsc::channel();
+        let (sounds, sound_rx) = mpsc::channel();
+        thread::spawn(move || notification_loop(note_rx));
+        thread::spawn(move || sound_loop(sound_rx));
         Feedback { notes, sounds }
     }
 
@@ -112,7 +141,42 @@ pub fn remove_cue_files(runtime: &Path) {
     }
 }
 
+/// The app shows everything in its pill. Without the app there is only the daemon's
+/// console, since a popup would need a window this process does not have.
+#[cfg(windows)]
+fn notification_loop(notes: Receiver<Command>) {
+    while let Ok(command) = notes.recv() {
+        match command {
+            Command::Show(Note::Warn(text) | Note::Error(text) | Note::Done(text)) => {
+                eprintln!("wispx: {text}");
+            }
+            Command::Show(_) => {}
+            Command::Flush(done) => {
+                let _ = done.send(());
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn sound_loop(cues: Receiver<Cue>) {
+    while let Ok(mut cue) = cues.recv() {
+        // Falling behind must not leave a string of late clicks.
+        while let Ok(newer) = cues.try_recv() {
+            cue = newer;
+        }
+        crate::win::sound::play(&cue.wav());
+    }
+}
+
+/// What plays the cues, for `wispx doctor`.
+#[cfg(windows)]
+pub fn player_name(_tools: &Toolbox) -> Option<String> {
+    Some("Windows sound".to_string())
+}
+
 /// A connection plus the id of the popup to keep updating in place.
+#[cfg(unix)]
 #[derive(Default)]
 struct Notifier {
     bus: Option<Connection>,
@@ -120,6 +184,7 @@ struct Notifier {
     retry_at: Option<Instant>,
 }
 
+#[cfg(unix)]
 impl Notifier {
     fn connection(&mut self) -> Option<&mut Connection> {
         if self.bus.is_none() {
@@ -214,6 +279,7 @@ impl Notifier {
     }
 }
 
+#[cfg(unix)]
 fn notification_loop(notes: Receiver<Command>) {
     let mut notifier = Notifier::default();
     let mut delayed = Delayed::default();
@@ -237,11 +303,13 @@ fn notification_loop(notes: Receiver<Command>) {
 }
 
 /// Holds a "recording" popup back until it is clear the press was not a tap.
+#[cfg(unix)]
 #[derive(Default)]
 struct Delayed {
     pending: Option<(Note, Instant)>,
 }
 
+#[cfg(unix)]
 impl Delayed {
     /// What to show right away, if anything.
     fn offer(&mut self, note: Note, now: Instant) -> Option<Note> {
@@ -272,6 +340,7 @@ impl Delayed {
     }
 }
 
+#[cfg(unix)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Player {
     program: PathBuf,
@@ -279,10 +348,12 @@ struct Player {
 }
 
 /// Which tool plays the cues, for `wispx doctor`.
+#[cfg(unix)]
 pub fn player_name(tools: &Toolbox) -> Option<String> {
     find_player(tools).map(|player| process::short_name(&player.program))
 }
 
+#[cfg(unix)]
 fn find_player(tools: &Toolbox) -> Option<Player> {
     let candidates: [(&str, &[&str]); 3] = [("pw-play", &[]), ("paplay", &[]), ("aplay", &["-q"])];
     candidates.iter().find_map(|(name, args)| {
@@ -293,6 +364,7 @@ fn find_player(tools: &Toolbox) -> Option<Player> {
     })
 }
 
+#[cfg(unix)]
 fn sound_loop(cues: Receiver<Cue>, player: Option<Player>, runtime: PathBuf) {
     while let Ok(mut cue) = cues.recv() {
         // Falling behind must not leave a string of late clicks.
@@ -305,6 +377,7 @@ fn sound_loop(cues: Receiver<Cue>, player: Option<Player>, runtime: PathBuf) {
     }
 }
 
+#[cfg(unix)]
 fn play(player: &Player, cue: Cue, runtime: &Path) -> Result<(), String> {
     let path = runtime.join(cue.file_name());
     if !path.exists() {
@@ -321,7 +394,7 @@ fn play(player: &Player, cue: Cue, runtime: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;

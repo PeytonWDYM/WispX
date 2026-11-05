@@ -66,3 +66,34 @@ jobs:
 
       - name: Release build
         run: cargo build --locked --release --no-default-features
+
+  # Windows has no Qt: the app there is plain Win32, declared by hand in src/win. The
+  # tests cover the logic that doesn't need a desktop, so whether the keyboard hook,
+  # the pill and pasting work still takes a person, who can start from this build.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Release build
+        run: cargo build --locked --release
+
+      - name: Keep the programs
+        uses: actions/upload-artifact@v4
+        with:
+          name: wispx-windows-x64
+          path: |
+            target/release/wispx.exe
+            target/release/wispx-gui.exe
+          if-no-files-found: error

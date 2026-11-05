@@ -10,6 +10,7 @@ use crate::process::Toolbox;
 use crate::sys;
 use std::env;
 use std::fs::{self, OpenOptions};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -23,15 +24,16 @@ const EXIT_FAILED: i32 = 1;
 const EXIT_NO_APP: i32 = 2;
 
 fn has_display() -> bool {
-    ["WAYLAND_DISPLAY", "DISPLAY"]
-        .iter()
-        .any(|name| env::var_os(name).is_some_and(|value| !value.is_empty()))
+    cfg!(windows)
+        || ["WAYLAND_DISPLAY", "DISPLAY"]
+            .iter()
+            .any(|name| env::var_os(name).is_some_and(|value| !value.is_empty()))
 }
 
 fn app_program() -> Option<PathBuf> {
     let sibling = env::current_exe()
         .ok()
-        .map(|exe| exe.with_file_name("wispx-gui"))
+        .map(|exe| exe.with_file_name(format!("wispx-gui{}", env::consts::EXE_SUFFIX)))
         .filter(|path| path.is_file());
     sibling.or_else(|| Toolbox::from_env().find("wispx-gui"))
 }
@@ -91,11 +93,11 @@ pub fn open(config: Option<&Path>, background: bool) -> i32 {
 fn start(program: &Path, config: Option<&Path>, background: bool) -> Result<(), String> {
     let runtime = paths::runtime_dir()?;
     let log_path = runtime.join("app.log");
-    let log = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .mode(0o600)
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let log = options
         .open(&log_path)
         .map_err(|error| format!("cannot open {}: {error}", log_path.display()))?;
     let mut command = Command::new(program);

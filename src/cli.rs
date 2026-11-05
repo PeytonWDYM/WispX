@@ -91,6 +91,39 @@ The first start asks you to confirm these KDE Plasma shortcuts:
     Ctrl+Meta+Backspace   Cancel
 ";
 
+/// The same help, in terms of what happens on Windows.
+#[cfg(windows)]
+fn help() -> String {
+    const LINUX_KEYS: &str = "The first start asks you to confirm these KDE Plasma shortcuts:
+    Ctrl+Meta+D           Hold to dictate
+    Ctrl+Meta+Space       Hands-free: start, keep going, or finish
+    Ctrl+Meta+Backspace   Cancel
+";
+    const WINDOWS_KEYS: &str = "The shortcuts are the same as they have always been on Windows:
+    Ctrl+Win              Hold to dictate
+    Ctrl+Win, then Space  Hands-free, with Ctrl+Win to finish
+    Esc                   Cancel
+";
+    HELP.replace(LINUX_KEYS, WINDOWS_KEYS)
+        .replace(
+            "Install the applications-menu entry",
+            "Add WispX to the Start menu",
+        )
+        .replace(
+            "paste-setup       Ask the desktop for permission to paste automatically\n",
+            "paste-setup       Not needed on Windows, where pasting is always allowed\n",
+        )
+        .replace(
+            "for desktops without portal shortcuts",
+            "for your own key bindings",
+        )
+}
+
+#[cfg(unix)]
+fn help() -> &'static str {
+    HELP
+}
+
 #[derive(Debug, PartialEq)]
 enum Command {
     App {
@@ -419,7 +452,7 @@ pub fn main() -> i32 {
 fn execute(command: Command, config_path: PathBuf, explicit_config: bool) -> i32 {
     match command {
         Command::Help => {
-            print!("{HELP}");
+            print!("{}", help());
             EXIT_OK
         }
         Command::Version => {
@@ -700,7 +733,7 @@ fn setup(autostart: bool) -> Result<String, String> {
     Ok(message)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

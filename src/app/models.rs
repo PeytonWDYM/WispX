@@ -157,6 +157,17 @@ fn fetch(
     cancel: &AtomicBool,
     progress: impl Fn(u64) + Send + 'static,
 ) -> Result<(), String> {
+    let url = format!("{BASE_URL}/{}", choice.file);
+    fetch_url(&url, curl, part, cancel, progress)
+}
+
+fn fetch_url(
+    url: &str,
+    curl: &Path,
+    part: &Path,
+    cancel: &AtomicBool,
+    progress: impl Fn(u64) + Send + 'static,
+) -> Result<(), String> {
     let args: Vec<OsString> = vec![
         "--fail".into(),
         "--location".into(),
@@ -166,7 +177,7 @@ fn fetch(
         "=https".into(),
         "--output".into(),
         part.into(),
-        format!("{BASE_URL}/{}", choice.file).into(),
+        url.into(),
     ];
     let (finished, done) = mpsc::channel::<()>();
     let watched = part.to_path_buf();
@@ -196,12 +207,92 @@ fn fetch(
     }
 }
 
+/// whisper.cpp itself for Windows, which has no package to install it from. The
+/// pinned release has been checked against GitHub's own digest.
+#[cfg(windows)]
+const WHISPER_URL: &str =
+    "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip";
+#[cfg(windows)]
+const WHISPER_SHA256: &str = "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb";
+#[cfg(windows)]
+pub const WHISPER_BYTES: u64 = 8_928_640;
+#[cfg(windows)]
+pub const WHISPER_LABEL: &str = "whisper.cpp (9 MB)";
+
+/// Fetches whisper.cpp and unpacks it to `<data>\\whisper`, which is on the search
+/// path, so it is found without restarting anything. Nothing is unpacked before its
+/// checksum has been verified, and a failure leaves what was there alone.
+#[cfg(windows)]
+pub fn download_whisper(
+    tools: &Toolbox,
+    cancel: &AtomicBool,
+    progress: impl Fn(u64) + Send + 'static,
+) -> Result<(), String> {
+    let curl = tools
+        .find("curl")
+        .ok_or("curl.exe is needed to download whisper.cpp. It comes with Windows 10 and later")?;
+    // Named in full, since Git for Windows' tar on PATH cannot read a zip file.
+    let tar = std::env::var_os("SystemRoot")
+        .map(|root| PathBuf::from(root).join("System32").join("tar.exe"))
+        .filter(|path| path.is_file())
+        .ok_or("tar.exe is needed to unpack whisper.cpp. It comes with Windows 10 and later")?;
+    let data = crate::paths::data_dir()?;
+    fs::create_dir_all(&data)
+        .map_err(|error| format!("cannot create {}: {error}", data.display()))?;
+    let unique = std::process::id();
+    let zip = data.join(format!(".whisper-{unique}.zip"));
+    let unpacked = data.join(format!(".whisper-{unique}"));
+    let result = (|| {
+        crate::paths::create_private_file(&zip)
+            .map_err(|error| format!("cannot create {}: {error}", zip.display()))?;
+        fetch_url(WHISPER_URL, &curl, &zip, cancel, progress)?;
+        let digest = super::sha256::of_file(&zip)
+            .map_err(|error| format!("cannot check the download: {error}"))?;
+        if digest != WHISPER_SHA256 {
+            return Err("the whisper.cpp download did not match its checksum".to_string());
+        }
+        fs::create_dir(&unpacked)
+            .map_err(|error| format!("cannot create {}: {error}", unpacked.display()))?;
+        let args: Vec<OsString> = vec![
+            "-x".into(),
+            "-f".into(),
+            zip.clone().into(),
+            "-C".into(),
+            unpacked.clone().into(),
+        ];
+        let mut spec = Spec::new(&tar, &args, Duration::from_secs(120));
+        spec.cancel = Some(cancel);
+        let output = process::run(spec).map_err(|error| format!("cannot unpack: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "cannot unpack whisper.cpp: {}",
+                process::last_error_line(&output.stderr)
+                    .unwrap_or_else(|| output.status.to_string())
+            ));
+        }
+        if !unpacked.join("Release").join("whisper-cli.exe").is_file() {
+            return Err("the download has no whisper-cli.exe in it".to_string());
+        }
+        let destination = data.join("whisper");
+        // An older copy can only be in the way if nothing is running from it.
+        if destination.exists() {
+            fs::remove_dir_all(&destination)
+                .map_err(|error| format!("cannot replace {}: {error}", destination.display()))?;
+        }
+        fs::rename(&unpacked, &destination)
+            .map_err(|error| format!("cannot save {}: {error}", destination.display()))
+    })();
+    let _ = fs::remove_file(&zip);
+    let _ = fs::remove_dir_all(&unpacked);
+    result
+}
+
 /// Whether a cancelled flag is set; lets the caller word its message.
 pub fn was_cancelled(cancel: &AtomicBool) -> bool {
     cancel.load(Ordering::SeqCst)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::testutil::TempDir;

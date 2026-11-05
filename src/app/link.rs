@@ -2,14 +2,14 @@
 //! streams what it reports. One daemon is ever in charge, so there is no state
 //! here to disagree with it.
 
-use crate::ipc::{ClientError, Watch};
+use crate::ipc::{self, ClientError, Watch};
 use crate::paths;
-use crate::process::{Capture, Drain};
+use crate::process::{self, Capture, Drain};
 use crate::sys;
 use serde_json::Value;
 use std::env;
-use std::os::unix::net::UnixStream;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,12 +55,23 @@ impl OwnedDaemon {
     }
 }
 
+#[cfg(unix)]
 pub fn daemon_program() -> PathBuf {
     env::current_exe()
         .ok()
         .map(|exe| exe.with_file_name("wispx"))
         .filter(|path| path.is_file())
         .unwrap_or_else(|| PathBuf::from("wispx"))
+}
+
+/// `wispx-gui.exe` can be the daemon too, so a lone copy of it is all anyone needs.
+#[cfg(windows)]
+pub fn daemon_program() -> PathBuf {
+    let exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("wispx-gui.exe"));
+    match exe.with_file_name("wispx.exe") {
+        sibling if sibling.is_file() => sibling,
+        _ => exe,
+    }
 }
 
 fn start_daemon(
@@ -76,8 +87,8 @@ fn start_daemon(
         .args(["daemon", "--quiet", "--app-child"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .process_group(0);
+        .stderr(Stdio::piped());
+    process::own_group(&mut command);
     let mut child = command
         .spawn()
         .map_err(|error| format!("cannot start {}: {error}", program.display()))?;
@@ -139,11 +150,8 @@ fn supervise(mut child: Child, stop: &AtomicBool, stderr: Option<Drain>) -> Exit
         Some(status) => Exit {
             clean: status.success(),
             code: status.code(),
-            message: if message.is_empty() && status.signal().is_some() {
-                format!(
-                    "the background service was stopped by signal {:?}",
-                    status.signal()
-                )
+            message: if message.is_empty() {
+                stopped_by_signal(status)
             } else {
                 message
             },
@@ -154,6 +162,18 @@ fn supervise(mut child: Child, stop: &AtomicBool, stderr: Option<Drain>) -> Exit
             message,
         },
     }
+}
+
+#[cfg(unix)]
+fn stopped_by_signal(status: std::process::ExitStatus) -> String {
+    status.signal().map_or_else(String::new, |signal| {
+        format!("the background service was stopped by signal {signal}")
+    })
+}
+
+#[cfg(windows)]
+fn stopped_by_signal(_status: std::process::ExitStatus) -> String {
+    String::new()
 }
 
 /// What came of looking for a daemon.
@@ -259,7 +279,7 @@ pub fn pump(
     mut watch: Watch,
     mut on_event: impl FnMut(Value) + Send + 'static,
     on_end: impl FnOnce() + Send + 'static,
-) -> Option<UnixStream> {
+) -> Option<ipc::Stream> {
     let closer = watch.closer();
     thread::spawn(move || {
         while let Some(event) = watch.next_event() {

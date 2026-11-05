@@ -6,7 +6,7 @@ Hold a key, talk, let go. What you said appears where your cursor is.
 
 This is the Linux version of the WispX app, written in Rust and built first for **KDE Plasma on Wayland**. A small pill sits at the bottom of your screen and shows what WispX is doing, and a tray icon holds the rest. Speech is recognised on your own machine by [whisper.cpp](https://github.com/ggml-org/whisper.cpp), so by default no audio leaves your computer. It needs no root access and never reads your keyboard: Plasma owns the shortcuts and tells WispX when they go down and come up.
 
-Looking for the Windows app? See [windows/README.md](windows/README.md).
+Looking for the Windows app? See [windows/README.md](windows/README.md). This Rust version also has a [Windows build](#on-windows), which is still waiting for its first real test.
 
 ## Quick start on KDE Plasma
 
@@ -128,6 +128,26 @@ bindsym --no-repeat $mod+Shift+t exec wispx toggle
 bindsym --no-repeat $mod+BackSpace exec wispx cancel
 ```
 
+## On Windows
+
+The same core also builds for Windows, drawing the pill, tray icon and settings window with Win32 itself, so Qt isn't involved. **CI builds it and runs its tests on Windows, but nobody has used it on a real Windows desktop yet.** Until someone has, expect problems, and use the [original app](windows/README.md) for anything that matters.
+
+| Keys | What it does |
+| --- | --- |
+| Hold Ctrl + Win | Records. Let go and the text appears. |
+| Ctrl + Win, then Space | Hands-free. Press Ctrl + Win again to finish. |
+| Esc | Cancel |
+
+To build it you need Windows 10 version 1803 or later and Rust. `cargo build --release` leaves `wispx-gui.exe`, the app, and `wispx.exe`, the command line, in `target\release`.
+
+Run `wispx-gui.exe` and it does what the original does: it copies itself to `%LOCALAPPDATA%\Programs\WispX`, adds a Start menu entry and starts from there. Running a newer copy later is the update. Add `--portable` to run it where it is, without installing anything. The exe isn't code-signed, so SmartScreen may warn you.
+
+Speech recognition is local by default here too. The settings window offers to download a build of whisper.cpp and a model, and that build of whisper.cpp needs the [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe). ChatGPT works as on Linux.
+
+Like the original, it can't reach apps running as administrator: Windows won't let a program see or press keys while one of those has focus, so dictation doesn't start there.
+
+Settings are in `%APPDATA%\WispX\config.json`, and models and the runtime folder in `%LOCALAPPDATA%\WispX`. **Uninstall WispX…** in the tray menu removes those and the program, and leaves your Codex login alone.
+
 ## Settings
 
 The settings window covers what most people change, and applies it straight away. Everything else is in `~/.config/wispx/config.json`: `wispx config init` writes the file, and `wispx reload` applies changes. Unknown settings are rejected, so typos don't silently do nothing.
@@ -203,9 +223,9 @@ It also talks over D-Bus, through a small client built into WispX, to these serv
 | A notification server | Popups, for `wispx daemon` |
 | The status notifier watcher | The tray icon |
 
-## Differences from the Windows app
+## Differences from the original Windows app
 
-Most of these come from Wayland, which deliberately doesn't let programs watch the keyboard or type freely.
+This compares Linux with the original app in `windows/`. Most of these come from Wayland, which deliberately doesn't let programs watch the keyboard or type freely.
 
 | | Windows | Linux |
 | --- | --- | --- |
@@ -262,14 +282,18 @@ src/
   transcribe/         whisper.cpp and ChatGPT
   config.rs, paths.rs settings and private directories
   doctor.rs           `wispx doctor`
-  app/                the app's logic, with no Qt: what the windows show and do
-  bin/wispx-gui.rs    the program that draws them
+  hotkey.rs           what the keys mean on Windows, with no system calls
+  win/                everything that talks to Windows: pipes, microphone, keyboard
+                      hook, paste, clipboard, installing, and the Win32 interface
+  app/                the app's logic, with no toolkit: what the windows show and do
+  gui_qt.rs           the app on Linux
+  bin/wispx-gui.rs    the program that starts the app on either system
 ui/                   the pill and settings in QML, and the C++ bridge to Qt
-build.rs              builds the bridge
+build.rs              builds the bridge on Linux, and the icon and manifest on Windows
 tests/
   e2e.rs              the real binary against stand-ins
   plasma_nested.rs    the real binary against the real desktop stack
   gui_nested.rs       the real app against the real desktop stack
-windows/              the Windows app
-packaging/            icons, and desktop entry and systemd unit examples
+windows/              the original Windows app
+packaging/            icons, the Windows manifest, and desktop entry and systemd unit examples
 ```
