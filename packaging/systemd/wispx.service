@@ -1,0 +1,25 @@
+# An alternative to `wispx setup --autostart`; use one or the other. It isn't
+# installed for you. Run `wispx setup` first, for the desktop entry, then:
+#
+#   cp packaging/systemd/wispx.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now wispx.service
+#
+# Plasma normally exports what this needs to the user manager. If WispX can't find
+# your session, run this once from a terminal inside it, then restart the service:
+#
+#   systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS
+[Unit]
+Description=WispX dictation
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/wispx daemon --quiet
+Restart=on-failure
+RestartSec=2
+# Exit status 4 means another WispX is already running.
+RestartPreventExitStatus=4
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,19 @@
+[package]
+name = "wispx"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Hold-to-dictate for Linux desktops, transcribed locally by whisper.cpp or by ChatGPT"
+repository = "https://github.com/PeytonWDYM/WispX"
+publish = false
+
+# Deliberately one direct dependency. Audio capture, clipboard, notifications,
+# HTTP and speech recognition are all delegated to native tools run as
+# subprocesses; see "What WispX runs" in the README for the full list.
+[dependencies]
+serde_json = { version = "1", default-features = false, features = ["std"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
