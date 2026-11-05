@@ -1,12 +1,12 @@
 //! The command line: argument parsing and the short-lived commands.
 
+use crate::app::{install, launch};
 use crate::audio::wav;
 use crate::config::{self, Backend, Config, HotkeyMode, Overrides, PasteMode};
 use crate::daemon;
 use crate::doctor;
 use crate::ipc::{self, ClientError, Request};
 use crate::paths;
-use crate::portal;
 use crate::process::Toolbox;
 use crate::sys;
 use crate::transcribe::{self, TranscribeError};
@@ -27,17 +27,25 @@ const HELP: &str = "\
 WispX: hold a key, speak, and your words appear. Runs on your own machine by default.
 
 USAGE
-    wispx [--config PATH] <COMMAND>
+    wispx [--config PATH] [COMMAND]
+
+    With no command, opens the WispX app: a small pill on screen, a tray icon, and
+    a settings window that walks through anything still needing setup.
 
 RUNNING
-    daemon            Run in the foreground and listen for shortcuts
+    app [--background]
+                      Open the app, or bring the running one to the front. It
+                      keeps running after the terminal closes; --background
+                      opens no window unless something needs attention
+    daemon            Run without any window, in the foreground, and listen for
+                      shortcuts
         --quiet               No greeting popup
         --hotkey MODE         auto, portal or none
         --paste MODE          auto, copy or none
         plus any of the transcription options below
     setup [--autostart]
-                      Install the desktop entry the portals need; --autostart
-                      also starts WispX when you log in
+                      Install the applications-menu entry; --autostart also
+                      opens WispX when you log in
     paste-setup       Ask the desktop for permission to paste automatically
     doctor [--backend NAME]
                       Check tools, models and desktop support without
@@ -85,17 +93,33 @@ The first start asks you to confirm these KDE Plasma shortcuts:
 
 #[derive(Debug, PartialEq)]
 enum Command {
-    Daemon { overrides: Overrides, quiet: bool },
+    App {
+        background: bool,
+    },
+    Daemon {
+        overrides: Overrides,
+        quiet: bool,
+        app_child: bool,
+    },
     Control(Request),
-    Status { json: bool },
+    Status {
+        json: bool,
+    },
     Last,
     Backend(Option<Backend>),
-    Transcribe { file: PathBuf, overrides: Overrides },
-    Doctor { overrides: Overrides },
+    Transcribe {
+        file: PathBuf,
+        overrides: Overrides,
+    },
+    Doctor {
+        overrides: Overrides,
+    },
     ConfigPath,
     ConfigShow,
     ConfigInit,
-    Setup { autostart: bool },
+    Setup {
+        autostart: bool,
+    },
     Help,
     Version,
 }
@@ -194,7 +218,12 @@ fn parse_arguments(arguments: Vec<OsString>) -> Result<Parsed, String> {
             Some(Word::Other(word)) => {
                 return Err(format!("unknown command `{}`", word.to_string_lossy()));
             }
-            None => return Err("no command given".to_string()),
+            None => {
+                return Ok(Parsed {
+                    config,
+                    command: Command::App { background: false },
+                });
+            }
         }
     };
     let command = parse_command(&command, &mut args)?;
@@ -231,6 +260,14 @@ fn parse_command(command: &str, args: &mut Args) -> Result<Command, String> {
         Ok(Command::Control(request))
     };
     match command {
+        "app" => match args.next_text()?.as_deref() {
+            None => Ok(Command::App { background: false }),
+            Some("--background") => {
+                args.finish()?;
+                Ok(Command::App { background: true })
+            }
+            Some(other) => Err(format!("unexpected argument `{other}`")),
+        },
         "daemon" => parse_daemon(args),
         "press" => control(Request::Press, args),
         "release" => control(Request::Release, args),
@@ -299,9 +336,12 @@ fn parse_command(command: &str, args: &mut Args) -> Result<Command, String> {
 fn parse_daemon(args: &mut Args) -> Result<Command, String> {
     let mut overrides = Overrides::default();
     let mut quiet = false;
+    let mut app_child = false;
     while let Some(flag) = args.next_text()? {
         match flag.as_str() {
             "--quiet" => quiet = true,
+            // Only for the app starting its own daemon, so it is not in the help.
+            "--app-child" => app_child = true,
             "--hotkey" => {
                 let value = args.value_of(&flag)?;
                 overrides.hotkey = Some(parse_choice(
@@ -327,7 +367,11 @@ fn parse_daemon(args: &mut Args) -> Result<Command, String> {
             }
         }
     }
-    Ok(Command::Daemon { overrides, quiet })
+    Ok(Command::Daemon {
+        overrides,
+        quiet,
+        app_child,
+    })
 }
 
 fn parse_transcribe(args: &mut Args) -> Result<Command, String> {
@@ -359,6 +403,9 @@ pub fn main() -> i32 {
         }
     };
     let explicit_config = parsed.config.is_some();
+    if let Command::App { background } = parsed.command {
+        return launch::open(parsed.config.as_deref(), background);
+    }
     let config_path = match parsed.config.map_or_else(paths::default_config_file, Ok) {
         Ok(path) => path,
         Err(error) => {
@@ -379,10 +426,17 @@ fn execute(command: Command, config_path: PathBuf, explicit_config: bool) -> i32
             println!("wispx {}", env!("CARGO_PKG_VERSION"));
             EXIT_OK
         }
-        Command::Daemon { overrides, quiet } => daemon::run(daemon::Options {
+        // Handled before a config path is worked out, by the app itself.
+        Command::App { .. } => EXIT_USAGE,
+        Command::Daemon {
+            overrides,
+            quiet,
+            app_child,
+        } => daemon::run(daemon::Options {
             config_path,
             overrides,
             quiet,
+            app_child,
         }),
         Command::Control(request) => control(request),
         Command::Status { json } => status(json),
@@ -423,7 +477,7 @@ fn request(request: Request) -> Result<Value, i32> {
     match ipc::send(&socket, request) {
         Ok(reply) => Ok(reply),
         Err(ClientError::NotRunning) => {
-            eprintln!("wispx: not running. Start it with `wispx daemon`");
+            eprintln!("wispx: not running. Open WispX, or start it with `wispx daemon`");
             Err(EXIT_NOT_RUNNING)
         }
         Err(ClientError::Failed(message)) => {
@@ -626,72 +680,24 @@ fn config_show(config_path: &Path) -> i32 {
     }
 }
 
-pub fn desktop_entry_path() -> Result<PathBuf, String> {
-    Ok(paths::applications_dir()?.join(format!("{}.desktop", portal::APP_ID)))
-}
-
 /// Writes user-level desktop entries. Only runs when explicitly asked to.
 fn setup(autostart: bool) -> Result<String, String> {
-    let exe = env::current_exe().map_err(|error| format!("cannot find this program: {error}"))?;
-    let exe = exe
-        .to_str()
-        .ok_or("this program's path is not valid UTF-8")?;
-    let entry = desktop_entry(exe)?;
-
-    let path = desktop_entry_path()?;
-    paths::atomic_write(&path, entry.as_bytes())?;
-    let mut message = format!(
-        "Installed {}\nNext: run `wispx daemon` and confirm the shortcuts your desktop suggests.",
-        path.display()
-    );
+    let path = install::install_menu_entry()?;
+    install::install_icons();
+    let mut message = format!("Installed {}", path.display());
+    message.push_str(if launch::app_available() {
+        "\nNext: open WispX from your applications menu, or run `wispx`."
+    } else {
+        "\nThis build has no desktop app, so the entry runs `wispx daemon --quiet`."
+    });
     if autostart {
-        let path = paths::autostart_dir()?.join(format!("{}.desktop", portal::APP_ID));
-        paths::atomic_write(&path, entry.as_bytes())?;
+        let path = install::set_autostart(true)?;
         message.push_str(&format!(
             "\nInstalled {}\nWispX will start when you log in.",
             path.display()
         ));
     }
     Ok(message)
-}
-
-fn desktop_entry(exe: &str) -> Result<String, String> {
-    Ok(format!(
-        "[Desktop Entry]\n\
-         Type=Application\n\
-         Name=WispX\n\
-         Comment=Hold a key, speak, and your words appear\n\
-         Exec={} daemon --quiet\n\
-         Icon=audio-input-microphone\n\
-         Terminal=false\n\
-         NoDisplay=true\n\
-         Categories=Utility;Accessibility;\n",
-        quote_exec(exe)?
-    ))
-}
-
-/// Quotes a program path by the Desktop Entry rules: `%` is doubled, and within
-/// double quotes `"`, `` ` ``, `$` and `\` take a backslash. That text then goes
-/// through the file format's own escaping, which doubles each backslash.
-fn quote_exec(path: &str) -> Result<String, String> {
-    if path.contains(['\n', '\r']) {
-        return Err("this program's path contains a line break".to_string());
-    }
-    let mut quoted = String::with_capacity(path.len() + 2);
-    quoted.push('"');
-    for character in path.chars() {
-        match character {
-            '"' | '`' | '$' => {
-                quoted.push_str("\\\\");
-                quoted.push(character);
-            }
-            '\\' => quoted.push_str("\\\\\\\\"),
-            '%' => quoted.push_str("%%"),
-            other => quoted.push(other),
-        }
-    }
-    quoted.push('"');
-    Ok(quoted)
 }
 
 #[cfg(test)]
@@ -727,7 +733,9 @@ mod tests {
 
     #[test]
     fn daemon_flags_override_settings() {
-        let Command::Daemon { overrides, quiet } = command(&[
+        let Command::Daemon {
+            overrides, quiet, ..
+        } = command(&[
             "daemon",
             "--quiet",
             "--backend",
@@ -744,7 +752,8 @@ mod tests {
             "/w",
             "--threads",
             "4",
-        ]) else {
+        ])
+        else {
             panic!("not a daemon command");
         };
         assert!(quiet);
@@ -760,8 +769,8 @@ mod tests {
     #[test]
     fn bad_usage_is_rejected_with_a_helpful_message() {
         for (words, expected) in [
-            (&[][..], "no command"),
-            (&["launch"], "unknown command"),
+            (&["launch"][..], "unknown command"),
+            (&["app", "--everywhere"], "unexpected argument"),
             (&["daemon", "--bogus"], "unexpected argument"),
             (&["daemon", "--backend"], "needs a value"),
             (
@@ -864,26 +873,24 @@ mod tests {
     }
 
     #[test]
-    fn exec_paths_are_quoted_by_the_desktop_entry_rules() {
-        assert_eq!(quote_exec("/usr/bin/wispx").unwrap(), r#""/usr/bin/wispx""#);
-        assert_eq!(quote_exec("/a b/wispx").unwrap(), r#""/a b/wispx""#);
-        assert_eq!(quote_exec("/100%/w").unwrap(), r#""/100%%/w""#);
-        assert_eq!(quote_exec("/a$b").unwrap(), r#""/a\\$b""#);
-        assert_eq!(quote_exec("/a\"b").unwrap(), r#""/a\\"b""#);
-        assert_eq!(quote_exec("/a`b").unwrap(), r#""/a\\`b""#);
-        assert_eq!(quote_exec(r"/a\b").unwrap(), r#""/a\\\\b""#);
-        assert!(quote_exec("/a\nb").is_err());
+    fn no_command_opens_the_app() {
+        assert_eq!(command(&[]), Command::App { background: false });
+        assert_eq!(command(&["app"]), Command::App { background: false });
+        assert_eq!(
+            command(&["app", "--background"]),
+            Command::App { background: true }
+        );
+        let parsed = parse(&["--config", "/etc/w.json"]).unwrap();
+        assert_eq!(parsed.config, Some(PathBuf::from("/etc/w.json")));
+        assert_eq!(parsed.command, Command::App { background: false });
     }
 
     #[test]
-    fn the_desktop_entry_starts_the_daemon_and_stays_out_of_menus() {
-        let entry = desktop_entry("/opt/my apps/wispx").unwrap();
-        assert!(entry.starts_with("[Desktop Entry]\n"));
-        assert!(
-            entry.contains("Exec=\"/opt/my apps/wispx\" daemon --quiet\n"),
-            "{entry}"
-        );
-        assert!(entry.contains("NoDisplay=true\n"));
-        assert!(entry.contains("Type=Application\n"));
+    fn the_app_marks_its_own_daemon() {
+        let Command::Daemon { app_child, .. } = command(&["daemon", "--quiet", "--app-child"])
+        else {
+            panic!("not a daemon command");
+        };
+        assert!(app_child);
     }
 }

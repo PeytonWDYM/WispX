@@ -9,7 +9,38 @@ permissions:
   contents: read
 
 jobs:
-  linux:
+  # What most people build: the app, with its windows. Arch is here because it
+  # always has the Qt and LayerShellQt that Plasma 6 needs.
+  app:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install Rust, Qt and LayerShellQt
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git rust dbus \
+            qt6-base qt6-declarative qt6-wayland layer-shell-qt wayland
+
+      - uses: actions/checkout@v4
+
+      # The tests that start a real compositor are opt-in, so this needs no display.
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      # Not as root, since some tests rely on a file permission being refused.
+      - name: Test
+        run: |
+          useradd --create-home tester
+          chown -R tester .
+          su tester -c 'cargo test --locked'
+
+      - name: Release build
+        run: cargo build --locked --release
+
+  # The daemon and command line alone, which need nothing from Qt.
+  headless:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,14 +58,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes dbus
 
-      - name: Format
-        run: cargo fmt --all --check
-
       - name: Lint
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked --no-default-features
 
       - name: Release build
-        run: cargo build --locked --release
+        run: cargo build --locked --release --no-default-features

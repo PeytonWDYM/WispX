@@ -14,6 +14,7 @@ use crate::desktop::kwin::FocusInfo;
 use crate::desktop::notify::{self, Feedback, Note};
 use crate::desktop::paste::{self, CopyReason, Delivered, Delivery, Injector, Timing};
 use crate::desktop::remote::{self, PlasmaInjector, SetupOutcome};
+use crate::doctor;
 use crate::ipc::{self, Incoming, Request};
 use crate::paths;
 use crate::process::Toolbox;
@@ -24,7 +25,7 @@ use crate::sys;
 use crate::transcribe::{self, TranscribeError};
 use serde_json::{Value, json};
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -36,6 +37,8 @@ use std::time::{Duration, Instant};
 
 pub const EXIT_ALREADY_RUNNING: i32 = 4;
 const TICK: Duration = Duration::from_millis(50);
+/// How often a watcher hears the mic level during a recording.
+const LEVEL_TICK: Duration = Duration::from_millis(33);
 /// Extra room so the recorder is still delivering when the limit is applied.
 const CAPTURE_MARGIN_SECS: u64 = 5;
 const SHUTDOWN_JOB_WAIT: Duration = Duration::from_millis(1500);
@@ -49,6 +52,9 @@ pub struct Options {
     pub config_path: PathBuf,
     pub overrides: Overrides,
     pub quiet: bool,
+    /// Started by the desktop app: it ends with the app, and the app shows
+    /// whatever would have been the startup popup.
+    pub app_child: bool,
 }
 
 enum Event {
@@ -83,8 +89,26 @@ struct Job {
     target: Option<FocusInfo>,
 }
 
+/// However the app ends, even killed outright, its end of the pipe closes.
+fn stop_when_stdin_closes() {
+    thread::spawn(|| {
+        let mut sink = [0u8; 64];
+        let mut stdin = std::io::stdin();
+        loop {
+            match stdin.read(&mut sink) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        sys::request_shutdown();
+    });
+}
+
 pub fn run(options: Options) -> i32 {
     sys::install_shutdown_handlers();
+    if options.app_child {
+        stop_when_stdin_closes();
+    }
     let runtime = match paths::runtime_dir() {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -200,9 +224,13 @@ pub fn run(options: Options) -> i32 {
         hotkey,
         injector,
         quit: false,
+        watchers: Vec::new(),
+        published: None,
+        last_level: None,
+        busy_readiness: Arc::new(AtomicBool::new(false)),
     };
 
-    daemon.greet(options.quiet);
+    daemon.greet(options.quiet, options.app_child);
     daemon.run_loop(&inbox);
     daemon.shutdown(&inbox);
 
@@ -221,7 +249,7 @@ fn wants_portal(mode: HotkeyMode, desktop: &SessionKind) -> bool {
 
 /// `Ok(None)` means another daemon holds it. Being a lock rather than a pid file,
 /// it can't go stale, however the last daemon ended.
-fn acquire_lock(path: &Path) -> Result<Option<File>, String> {
+pub(crate) fn acquire_lock(path: &Path) -> Result<Option<File>, String> {
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -276,27 +304,90 @@ struct Daemon {
     hotkey: shortcuts::Status,
     injector: Option<Arc<PlasmaInjector>>,
     quit: bool,
+    /// Connections streaming events to a desktop interface.
+    watchers: Vec<Watcher>,
+    /// What watchers last heard, so they only hear about changes.
+    published: Option<Value>,
+    last_level: Option<Instant>,
+    busy_readiness: Arc<AtomicBool>,
+}
+
+struct Watcher {
+    events: Sender<Value>,
+    presents_feedback: bool,
 }
 
 impl Daemon {
-    fn greet(&mut self, quiet: bool) {
+    fn greet(&mut self, quiet: bool, app_child: bool) {
         if let Err(problem) = transcribe::precheck(&self.config, &self.tools) {
             eprintln!("wispx: not ready to transcribe: {problem}");
-            self.note(Note::Warn(problem));
-        } else if !quiet {
+            // The app asks for the same checks once it has connected.
+            if !app_child {
+                self.note(Note::Warn(problem));
+            }
+        } else if !quiet && !app_child {
             self.note(Note::Done("WispX is running".to_string()));
         }
     }
 
     fn run_loop(&mut self, inbox: &Receiver<Event>) {
         while !self.quit && !sys::shutdown_requested() {
-            match inbox.recv_timeout(TICK) {
+            let wait = if self.recording.is_some() && !self.watchers.is_empty() {
+                LEVEL_TICK
+            } else {
+                TICK
+            };
+            match inbox.recv_timeout(wait) {
                 Ok(event) => self.handle(event),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
             self.tick();
+            self.publish();
         }
+    }
+
+    /// Tells watchers what changed. Runs after every event and tick, so it covers
+    /// anything that moves the status, including threads finishing on their own.
+    fn publish(&mut self) {
+        if self.watchers.is_empty() {
+            return;
+        }
+        let status = self.status_event();
+        if self.published.as_ref() != Some(&status) {
+            self.broadcast(&status);
+            self.published = Some(status);
+        }
+        if let Some(active) = &self.recording {
+            let now = Instant::now();
+            let due = self
+                .last_level
+                .is_none_or(|last| now.duration_since(last) >= LEVEL_TICK);
+            if due {
+                let level = active.recording.level();
+                self.last_level = Some(now);
+                self.broadcast(&json!({ "event": "level", "level": level }));
+            }
+        }
+    }
+
+    /// Sends to every watcher, forgetting any that hung up.
+    fn broadcast(&mut self, event: &Value) {
+        self.watchers
+            .retain(|watcher| watcher.events.send(event.clone()).is_ok());
+    }
+
+    fn status_event(&self) -> Value {
+        let mut status = self.status_fields();
+        status["event"] = json!("status");
+        status
+    }
+
+    fn presenting(&mut self) -> bool {
+        // A ping nobody acts on: it is how a watcher that left gets noticed now,
+        // rather than after a popup has already been skipped for it.
+        self.broadcast(&json!({ "event": "ping" }));
+        self.watchers.iter().any(|w| w.presents_feedback)
     }
 
     fn handle(&mut self, event: Event) {
@@ -338,7 +429,23 @@ impl Daemon {
         let _ = self.input(input);
     }
 
-    fn note(&self, note: Note) {
+    /// Shows a note in the app's pill when it is presenting, or as a popup. The
+    /// overlay already shows recording and transcribing, so those need no text.
+    fn note(&mut self, note: Note) {
+        if self.presenting() {
+            let message = match &note {
+                Note::Done(text) => Some(("success", text.as_str())),
+                Note::Warn(text) => Some(("warn", text.as_str())),
+                Note::Error(text) => Some(("error", text.as_str())),
+                // Pasted needs no words: the text has appeared, and the pill pops.
+                Note::Recording { .. } | Note::Transcribing(_) | Note::Pasted | Note::Clear => None,
+            };
+            if let Some((kind, text)) = message {
+                let event = json!({ "event": "message", "kind": kind, "text": text });
+                self.broadcast(&event);
+            }
+            return;
+        }
         if note.allowed(self.config.notifications) {
             self.feedback.note(note);
         }
@@ -519,7 +626,7 @@ impl Daemon {
     }
 
     /// Shows a note unless more important work is still on screen.
-    fn note_idle(&self, note: Note) {
+    fn note_idle(&mut self, note: Note) {
         if self.session.mode().is_none() && self.in_flight.is_empty() {
             self.note(note);
         }
@@ -541,7 +648,7 @@ impl Daemon {
 
     fn announce(&mut self, delivery: Delivery) {
         match delivery {
-            Delivery::Pasted => self.note_idle(Note::Done("Pasted".to_string())),
+            Delivery::Pasted => self.note_idle(Note::Pasted),
             Delivery::Copied(CopyReason::Requested | CopyReason::CannotVerify) => {
                 self.note_idle(Note::Done("Copied. Press Ctrl + V to paste".to_string()));
             }
@@ -598,6 +705,23 @@ impl Daemon {
                 self.paste_setup(reply);
                 return;
             }
+            Request::Configure(patch) => self.configure(&patch),
+            Request::Readiness => {
+                self.readiness(reply);
+                return;
+            }
+            Request::Watch { presents_feedback } => {
+                // Anything already on screen belongs to the popups being replaced.
+                if presents_feedback {
+                    self.feedback.note(Note::Clear);
+                }
+                let _ = reply.send(self.status_event());
+                self.watchers.push(Watcher {
+                    events: reply,
+                    presents_feedback,
+                });
+                return;
+            }
             Request::Quit => {
                 self.quit = true;
                 Ok("Stopping".to_string())
@@ -612,31 +736,103 @@ impl Daemon {
             Ok(message) => (true, message),
             Err(message) => (false, message),
         };
+        let mut value = self.status_fields();
+        value["ok"] = json!(ok);
+        value["message"] = json!(message);
+        value["elapsed_ms"] = json!(self.session.elapsed(now).map(|e| e.as_millis() as u64));
+        value["level"] = json!(
+            self.recording
+                .as_ref()
+                .map(|active| active.recording.level())
+        );
+        if let Some(text) = transcript {
+            value["transcript"] = json!(text);
+        }
+        value
+    }
+
+    /// Everything about the daemon that only changes when something happens, so
+    /// watchers can be told exactly when it does.
+    fn status_fields(&self) -> Value {
         let state = match self.session.mode() {
             Some(Mode::Hold) => "recording",
             Some(Mode::Locked) => "recording-hands-free",
             None if !self.in_flight.is_empty() => "transcribing",
             None => "idle",
         };
-        let mut value = json!({
-            "ok": ok,
-            "message": message,
+        let hotkey_state = match &self.hotkey {
+            shortcuts::Status::Starting => "starting",
+            shortcuts::Status::Bound(_) => "bound",
+            shortcuts::Status::Unavailable(_) => "unavailable",
+            shortcuts::Status::Declined => "declined",
+            shortcuts::Status::Disconnected(_) => "disconnected",
+        };
+        let triggers = match &self.hotkey {
+            shortcuts::Status::Bound(text) => shortcuts::parse_triggers(text)
+                .into_iter()
+                .map(|(id, trigger)| (id, Value::String(trigger)))
+                .collect(),
+            _ => serde_json::Map::new(),
+        };
+        json!({
             "state": state,
-            "elapsed_ms": self.session.elapsed(now).map(|e| e.as_millis() as u64),
-            "level": self.recording.as_ref().map(|active| active.recording.level()),
             "transcribing": self.in_flight.len(),
             "backend": self.config.backend.as_str(),
             "config": self.config_path.to_string_lossy(),
             "session": self.desktop.describe(),
             "hotkey": self.hotkey.describe(),
+            "hotkey_state": hotkey_state,
+            "triggers": triggers,
             "paste": self.paste_status(),
+            "paste_state": self.paste_state(),
             "has_transcript": self.last_transcript.is_some(),
             "last_error": self.last_error,
-        });
-        if let Some(text) = transcript {
-            value["transcript"] = json!(text);
+            "settings": {
+                "language": self.config.language,
+                "model": self.config.whisper.model.to_string_lossy(),
+                "sounds": self.config.sounds,
+                "idle_pill": self.config.idle_pill,
+                "device": self.config.audio.device,
+                "recorder": self.config.audio.recorder.as_str(),
+            },
+        })
+    }
+
+    /// The same facts as [`Self::paste_status`], for code to act on.
+    fn paste_state(&self) -> &'static str {
+        match (self.config.paste, &self.injector) {
+            (PasteMode::None, _) => "off",
+            (PasteMode::Copy, _) => "copy",
+            (PasteMode::Auto, None) => "needs-plasma",
+            (PasteMode::Auto, Some(injector)) if injector.ready() => "automatic",
+            (PasteMode::Auto, Some(_)) => "needs-permission",
         }
-        value
+    }
+
+    /// Saves settings and applies them together, or changes nothing at all.
+    /// Recordings and transcriptions under way keep what they started with.
+    fn configure(&mut self, patch: &str) -> Result<String, String> {
+        let patch: Value = serde_json::from_str(patch).map_err(|error| error.to_string())?;
+        config::persist_patch(&self.config_path, &patch)?;
+        self.overrides.forget(&patch);
+        self.reload()?;
+        Ok(format!("Saved in {}", self.config_path.display()))
+    }
+
+    /// Runs the checks elsewhere: they ask the session bus, which can be slow.
+    fn readiness(&self, reply: Sender<Value>) {
+        if self.busy_readiness.swap(true, Ordering::SeqCst) {
+            let _ = reply.send(ipc::failure("The checks are already running"));
+            return;
+        }
+        let config = Arc::clone(&self.config);
+        let (tools, desktop) = (self.tools.clone(), self.desktop.clone());
+        let busy = Arc::clone(&self.busy_readiness);
+        thread::spawn(move || {
+            let checks = doctor::collect(&config, &tools, &desktop);
+            busy.store(false, Ordering::SeqCst);
+            let _ = reply.send(json!({ "ok": true, "checks": checks }));
+        });
     }
 
     fn paste_status(&self) -> String {
@@ -650,7 +846,7 @@ impl Daemon {
                 "automatic, into the window that had focus".to_string()
             }
             (PasteMode::Auto, Some(_)) => {
-                "copy to the clipboard (run `wispx paste-setup` to paste automatically)".to_string()
+                "copy to the clipboard (automatic paste has not been allowed yet)".to_string()
             }
         }
     }
@@ -739,6 +935,8 @@ impl Daemon {
     }
 
     fn shutdown(&mut self, inbox: &Receiver<Event>) {
+        // Ending each stream is also what lets their connections finish draining.
+        self.watchers.clear();
         self.session.abort();
         self.recording = None;
         for (_, cancel) in &self.in_flight {
@@ -751,6 +949,7 @@ impl Daemon {
                 Ok(Event::Ipc(incoming)) => {
                     let _ = incoming.reply.send(ipc::failure("WispX is stopping"));
                 }
+                // Dropped at once, which ends any stream a late watcher opened.
                 Ok(_) | Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }

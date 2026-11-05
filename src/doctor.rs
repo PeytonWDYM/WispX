@@ -12,6 +12,7 @@ use crate::paths;
 use crate::portal;
 use crate::process::Toolbox;
 use crate::transcribe::{chatgpt, whisper};
+use serde_json::{Value, json};
 use std::path::Path;
 use std::time::Duration;
 
@@ -24,8 +25,21 @@ enum Level {
     Fail,
 }
 
+impl Level {
+    fn as_str(self) -> &'static str {
+        match self {
+            Level::Ok => "ok",
+            Level::Warn => "warn",
+            Level::Fail => "fail",
+        }
+    }
+}
+
+/// Prints each line as it is found, or collects them for the desktop interface.
+#[derive(Default)]
 struct Report {
     failed: bool,
+    collected: Option<Vec<Value>>,
 }
 
 impl Report {
@@ -38,7 +52,14 @@ impl Report {
                 "[FAIL]"
             }
         };
-        println!("{tag} {name}: {}", detail.as_ref());
+        match &mut self.collected {
+            Some(checks) => checks.push(json!({
+                "name": name,
+                "level": level.as_str(),
+                "detail": detail.as_ref(),
+            })),
+            None => println!("{tag} {name}: {}", detail.as_ref()),
+        }
     }
 
     fn result(&mut self, name: &str, result: Result<String, String>) {
@@ -50,7 +71,7 @@ impl Report {
 }
 
 pub fn run(config_path: &Path, overrides: &Overrides) -> i32 {
-    let mut report = Report { failed: false };
+    let mut report = Report::default();
     let tools = Toolbox::from_env();
 
     let config = Config::load(config_path).and_then(|mut config| {
@@ -74,35 +95,7 @@ pub fn run(config_path: &Path, overrides: &Overrides) -> i32 {
     };
 
     let desktop = SessionKind::detect();
-    check_session(&mut report, &desktop);
-
-    report.result(
-        "recorder",
-        audio::resolve(&config.audio, &tools)
-            .map(|plan| format!("{} (the microphone was not opened)", plan.program.display())),
-    );
-
-    check_backend(&mut report, &config, &tools);
-
-    match (config.paste, ToolClipboard::detect(&desktop, &tools)) {
-        (PasteMode::None, _) => report.line(Level::Ok, "clipboard", "not used (paste is none)"),
-        (_, Ok(clipboard)) => report.line(Level::Ok, "clipboard", clipboard.tool_name()),
-        (_, Err(error)) => report.line(Level::Fail, "clipboard", error),
-    }
-
-    if config.sounds {
-        match notify::player_name(&tools) {
-            Some(name) => report.line(Level::Ok, "sounds", name),
-            None => report.line(
-                Level::Warn,
-                "sounds",
-                "no player found (pw-play, paplay or aplay), so cues stay silent",
-            ),
-        }
-    }
-
-    check_bus_services(&mut report, &config, &desktop);
-    check_desktop_entry(&mut report);
+    check_environment(&mut report, &config, &tools, &desktop);
 
     match ipc::send(&paths::client_socket_path(), Request::Status) {
         Ok(reply) => {
@@ -124,13 +117,55 @@ pub fn run(config_path: &Path, overrides: &Overrides) -> i32 {
             report.line(
                 Level::Warn,
                 "daemon",
-                "not running; start it with `wispx daemon`",
+                "not running; open WispX, or start it with `wispx daemon`",
             );
         }
         Err(ClientError::Failed(error)) => report.line(Level::Warn, "daemon", error),
     }
 
     i32::from(report.failed)
+}
+
+/// The same checks for the desktop interface, using the settings actually in use.
+pub fn collect(config: &Config, tools: &Toolbox, desktop: &SessionKind) -> Vec<Value> {
+    let mut report = Report {
+        failed: false,
+        collected: Some(Vec::new()),
+    };
+    check_environment(&mut report, config, tools, desktop);
+    report.collected.unwrap_or_default()
+}
+
+fn check_environment(report: &mut Report, config: &Config, tools: &Toolbox, desktop: &SessionKind) {
+    check_session(report, desktop);
+
+    report.result(
+        "recorder",
+        audio::resolve(&config.audio, tools)
+            .map(|plan| format!("{} (the microphone was not opened)", plan.program.display())),
+    );
+
+    check_backend(report, config, tools);
+
+    match (config.paste, ToolClipboard::detect(desktop, tools)) {
+        (PasteMode::None, _) => report.line(Level::Ok, "clipboard", "not used (paste is none)"),
+        (_, Ok(clipboard)) => report.line(Level::Ok, "clipboard", clipboard.tool_name()),
+        (_, Err(error)) => report.line(Level::Fail, "clipboard", error),
+    }
+
+    if config.sounds {
+        match notify::player_name(tools) {
+            Some(name) => report.line(Level::Ok, "sounds", name),
+            None => report.line(
+                Level::Warn,
+                "sounds",
+                "no player found (pw-play, paplay or aplay), so cues stay silent",
+            ),
+        }
+    }
+
+    check_bus_services(report, config, desktop);
+    check_desktop_entry(report);
 }
 
 fn check_session(report: &mut Report, desktop: &SessionKind) {
@@ -284,7 +319,9 @@ fn check_bus_services(report: &mut Report, config: &Config, desktop: &SessionKin
         ),
         (true, Some(_), false) => (
             Level::Warn,
-            "not allowed yet. Run `wispx paste-setup` to choose, or keep copy-only".to_string(),
+            "not allowed yet. Use Enable automatic paste in WispX, or run `wispx paste-setup`, \
+             or keep copy-only"
+                .to_string(),
         ),
         (true, Some(version), true) => (
             Level::Ok,
@@ -299,7 +336,7 @@ fn portal_version(bus: &mut Connection, interface: &str) -> Option<u32> {
 }
 
 fn check_desktop_entry(report: &mut Report) {
-    let path = crate::cli::desktop_entry_path();
+    let path = crate::app::install::menu_entry_path();
     match path {
         Ok(path) if path.exists() => {
             report.line(Level::Ok, "desktop entry", path.display().to_string())
@@ -308,7 +345,8 @@ fn check_desktop_entry(report: &mut Report) {
             Level::Warn,
             "desktop entry",
             format!(
-                "{} is missing. Run `wispx setup` so the desktop can name WispX in its dialogs",
+                "{} is missing. Open WispX or run `wispx setup` so the desktop can name WispX in \
+                 its dialogs",
                 path.display()
             ),
         ),

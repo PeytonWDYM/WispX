@@ -2,7 +2,7 @@
 target/
 
 # Windows build (windows/)
-bin/
-obj/
+windows/**/bin/
+windows/**/obj/
 .vs/
 *.user
