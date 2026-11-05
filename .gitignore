@@ -2,10 +2,3 @@ bin/
 obj/
 .vs/
 *.user
-
-# AI tooling and planning notes
-CLAUDE.md
-AGENTS.md
-.claude/
-.codex/
-*.plan.md

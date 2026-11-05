@@ -26,7 +26,9 @@ To update, download the new `WispX.exe` and run it.
 | Ctrl + Win, then Space | Hands-free. Press Ctrl + Win again to finish. |
 | Esc | Cancel |
 
-The tray icon has: copy last transcript, sounds, idle pill, start with Windows, and uninstall.
+Left-click the tray icon to open **Options**, where you can change the shortcut, microphone, language, sounds, idle pill, and start with Windows. Ctrl + Win is the default shortcut.
+
+The tray menu also has copy last transcript, How to use, and uninstall.
 
 ## Notes
 
@@ -51,11 +53,11 @@ GitHub Actions builds every push and pull request; the exe is attached to each r
 
 ```
 src/
-  App.xaml.cs         startup, tray, dictation flow
+  App.xaml.cs         startup, dictation flow
   Audio/              mic recording, sounds
-  Input/              Ctrl+Win hook, pasting, Win32 calls
+  Input/              configurable hotkey hook, pasting, Win32 calls
   Transcription/      ChatGPT transcribe + Codex login
-  UI/                 the overlay pill
+  UI/                 overlay pill, tray, Options pages
   Setup/              self-install, settings
   Assets/             icon
 ```

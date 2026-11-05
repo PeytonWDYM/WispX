@@ -44,6 +44,18 @@ namespace WispX
 
         public static bool HasLogin() => TryReadAuth(out _, out _, out _);
 
+        /// <summary>Reads the email in Codex's ID token without refreshing it or contacting a server.</summary>
+        public static string LoginEmail()
+        {
+            try
+            {
+                if (!HasLogin()) return null;
+                var root = JsonNode.Parse(ReadShared(AuthPath));
+                return Claim(root?["tokens"]?["id_token"]?.GetValue<string>(), "email");
+            }
+            catch { return null; }
+        }
+
         /// <summary>Opens a TCP+TLS connection to chatgpt.com ahead of time so the first transcription feels instant.</summary>
         public static void Warmup()
         {

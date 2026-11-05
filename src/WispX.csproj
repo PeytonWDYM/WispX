@@ -17,12 +17,13 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <DebugType>none</DebugType>
-    <NoWarn>WFO0003</NoWarn>
+    <NoWarn>WFO0003;WPF0001</NoWarn>
     <Product>WispX</Product>
     <Description>WispX - hold Ctrl+Win to dictate with ChatGPT</Description>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
   <ItemGroup>
+    <Resource Include="Assets/WispX.ico" />
     <PackageReference Include="NAudio.WinMM" Version="2.2.1" />
   </ItemGroup>
 </Project>
