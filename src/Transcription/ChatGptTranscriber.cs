@@ -33,7 +33,7 @@ namespace WispX
             AutomaticDecompression = DecompressionMethods.All,
             PooledConnectionLifetime = TimeSpan.FromMinutes(10),
         })
-        { Timeout = TimeSpan.FromSeconds(60) };
+        { Timeout = TimeSpan.FromMinutes(3) }; // a 10-minute recording is ~19 MB to upload, then ~25 s to transcribe
 
         private static readonly SemaphoreSlim RefreshLock = new SemaphoreSlim(1, 1);
 
@@ -90,12 +90,24 @@ namespace WispX
                 throw new TranscribeException("Unexpected reply from ChatGPT");
             }
             if (status == 401) throw new TranscribeException("Codex login expired. Open Codex once");
-            if (status == 400 && body.Contains("audio_too_short")) throw new TranscribeException("Too short. Hold a bit longer");
+            if (status == 400 && body.Replace('_', ' ').Contains("too short", StringComparison.OrdinalIgnoreCase))
+                throw new TranscribeException("Too short. Hold a bit longer");
             if (status == 403) throw new TranscribeException("ChatGPT refused the request (403)");
             if (status == 413) throw new TranscribeException("Recording too long");
             if (status == 429) throw new TranscribeException("ChatGPT rate limit. Try again soon");
             if (status == -1) throw new TranscribeException("No connection to ChatGPT");
-            throw new TranscribeException($"ChatGPT error {status}");
+            throw new TranscribeException(Detail(body) is string d ? $"ChatGPT error {status}: {d}" : $"ChatGPT error {status}");
+        }
+
+        /// <summary>The server's short reason from an error body like {"detail":"..."}, or null.</summary>
+        private static string Detail(string body)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                return doc.RootElement.TryGetProperty("detail", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() : null;
+            }
+            catch { return null; }
         }
 
         private static async Task<(int status, string body)> PostAsync(byte[] wav, int durationMs, string language, string access, string account)

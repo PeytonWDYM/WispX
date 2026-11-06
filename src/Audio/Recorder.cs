@@ -87,7 +87,8 @@ namespace WispX
             byte[] pcm;
             lock (_gate) { pcm = _pcm.ToArray(); _pcm = null; }
             _level = 0;
-            return (ToWav(pcm), _peak, pcm.Length * 1000 / (Rate * 2));
+            // 64-bit math: in 32-bit, pcm.Length * 1000 overflows past ~67 s and sends a negative duration.
+            return (ToWav(pcm), _peak, (int)(pcm.Length * 1000L / (Rate * 2)));
         }
 
         public void Cancel()
