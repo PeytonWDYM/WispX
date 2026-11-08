@@ -1,6 +1,7 @@
 import { Button, ComboBox, Palette, ScrollView } from "std-widgets.slint";
 import { Card, CardHeader, Heading, Description, ToggleCard } from "components.slint";
-export enum Action { check-account, change-shortcut, reset-shortcut, test-microphone, sounds, idle-pill, startup, close, page-changed }
+import { CleanupPage } from "cleanup.slint";
+export enum Action { check-account, change-shortcut, reset-shortcut, test-microphone, cleanup, cleanup-context, sounds, idle-pill, startup, close, page-changed }
 export component OptionsWindow inherits Window {
     in property <string> version;
     title: "WispX Options";
@@ -37,9 +38,16 @@ export component OptionsWindow inherits Window {
     in-out property <bool> sounds;
     in-out property <bool> idle-pill;
     in-out property <bool> startup;
+    in property <bool> cleanup-available;
+    in-out property <bool> cleanup;
+    in-out property <bool> cleanup-context;
+    in property <[string]> dictionary;
+    in property <int> dictionary-limit;
     callback action(Action);
     callback microphone-selected(int);
     callback language-selected(int);
+    callback dictionary-add(string);
+    callback dictionary-remove(int);
     changed page => { root.action(Action.page-changed); }
     forward-focus: keys-scope;
     keys-scope := FocusScope {
@@ -60,11 +68,11 @@ export component OptionsWindow inherits Window {
                 Rectangle { x: parent.width - 1px; width: 1px; background: Palette.border; }
                 VerticalLayout {
                     padding: 12px; padding-top: 24px; spacing: 4px;
-                    for name[index] in ["Account", "Shortcut", "Audio", "General"]: Rectangle {
+                    for name[index] in ["Account", "Shortcut", "Audio", "Cleanup", "General"]: Rectangle {
                         height: 46px; border-radius: 6px;
                         background: root.page == index || hit.has-hover ? Palette.alternate-background : transparent;
                         Text { x: 40px; text: name; color: Palette.foreground; vertical-alignment: center; }
-                        Text { x: 16px; text: ["\u{e77b}", "\u{e765}", "\u{e720}", "\u{e713}"][index]; font-family: root.icon-font; color: Palette.foreground; vertical-alignment: center; }
+                        Text { x: 16px; text: ["\u{e77b}", "\u{e765}", "\u{e720}", "\u{e8fb}", "\u{e713}"][index]; font-family: root.icon-font; color: Palette.foreground; vertical-alignment: center; }
                         hit := TouchArea { clicked => { root.page = index; } }
                     }
                     Rectangle { vertical-stretch: 1; }
@@ -83,7 +91,7 @@ export component OptionsWindow inherits Window {
                 content-width: self.width;
                 VerticalLayout {
                     padding: 28px; padding-top: 24px; spacing: 12px;
-                    Heading { text: ["Account", "Shortcut", "Audio", "General"][root.page]; }
+                    Heading { text: ["Account", "Shortcut", "Audio", "Cleanup", "General"][root.page]; }
                     Rectangle { height: 12px; }
                     if root.page == 0: Card {
                         HorizontalLayout {
@@ -162,7 +170,19 @@ export component OptionsWindow inherits Window {
                             ComboBox { model: root.languages; current-index <=> root.language; selected(_) => { root.language-selected(self.current-index); } }
                         }
                     }
-                    if root.page == 3: VerticalLayout {
+                    if root.page == 3: CleanupPage {
+                        icon-font: root.icon-font;
+                        available: root.cleanup-available;
+                        cleanup <=> root.cleanup;
+                        context <=> root.cleanup-context;
+                        dictionary: root.dictionary;
+                        dictionary-limit: root.dictionary-limit;
+                        cleanup-changed => { root.action(Action.cleanup); }
+                        context-changed => { root.action(Action.cleanup-context); }
+                        add-entry(entry) => { root.dictionary-add(entry); }
+                        remove-entry(index) => { root.dictionary-remove(index); }
+                    }
+                    if root.page == 4: VerticalLayout {
                         vertical-stretch: 0;
                         spacing: 12px;
                         ToggleCard { icon-font: root.icon-font; glyph: "\u{e767}"; title: "Play sounds"; detail: "Audio cues when dictation starts and stops."; checked <=> root.sounds; toggled => { root.action(Action.sounds); } }

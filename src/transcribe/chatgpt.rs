@@ -13,7 +13,7 @@ use ureq::{
 
 #[derive(Clone)]
 pub struct ChatGpt {
-    agent: Agent,
+    pub(crate) agent: Agent,
 }
 impl Default for ChatGpt {
     fn default() -> Self {

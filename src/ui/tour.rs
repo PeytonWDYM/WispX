@@ -25,7 +25,7 @@ pub fn start(ui: Rc<Options>, dir: PathBuf) -> io::Result<Timer> {
                 let path = dir.join(format!(
                     "{}-{}.png",
                     i + 1,
-                    ["account", "shortcut", "audio", "general"][i]
+                    ["account", "shortcut", "audio", "cleanup", "general"][i]
                 ));
                 let mut encoder =
                     png::Encoder::new(File::create(path)?, pixels.width(), pixels.height());
@@ -41,7 +41,7 @@ pub fn start(ui: Rc<Options>, dir: PathBuf) -> io::Result<Timer> {
             let _ = slint::quit_event_loop();
             return;
         }
-        if i == 3 {
+        if i == 4 {
             let _ = slint::quit_event_loop();
         } else {
             page.set(i + 1);

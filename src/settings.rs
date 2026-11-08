@@ -17,6 +17,9 @@ pub struct Settings {
     pub hotkey: Hotkey,
     pub microphone: String,
     pub first_run_done: bool,
+    pub cleanup: bool,
+    pub cleanup_context: bool,
+    pub dictionary: Vec<String>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -27,6 +30,9 @@ impl Default for Settings {
             hotkey: Hotkey::default(),
             microphone: String::new(),
             first_run_done: false,
+            cleanup: true,
+            cleanup_context: true,
+            dictionary: Vec::new(),
         }
     }
 }
@@ -67,6 +73,8 @@ impl SettingsStore {
         rx
     }
     pub fn save(&mut self) -> io::Result<()> {
+        self.value.dictionary =
+            crate::transcribe::cleanup::normalize_dictionary(&self.value.dictionary);
         atomic_write(
             &self.path,
             &self.path.with_extension("json.tmp"),

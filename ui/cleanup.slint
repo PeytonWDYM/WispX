@@ -1,0 +1,61 @@
+import { Button, LineEdit, Palette } from "std-widgets.slint";
+import { Card, CardHeader, Description, ToggleCard } from "components.slint";
+
+export component CleanupPage inherits VerticalLayout {
+    in property <string> icon-font;
+    in property <bool> available;
+    in-out property <bool> cleanup;
+    in-out property <bool> context;
+    in property <[string]> dictionary;
+    in property <int> dictionary-limit;
+    callback cleanup-changed;
+    callback context-changed;
+    callback add-entry(string);
+    callback remove-entry(int);
+    vertical-stretch: 0;
+    spacing: 12px;
+    if !root.available: Description {
+        text: "Cleanup needs Codex signed in with ChatGPT";
+        color: #b88922;
+    }
+    ToggleCard {
+        icon-font: root.icon-font; glyph: "\u{e8fb}";
+        title: "Clean up transcripts";
+        detail: "Fix punctuation, drop filler words, and keep what you meant when you correct yourself.";
+        checked <=> root.cleanup; enabled: root.available;
+        toggled => { root.cleanup-changed(); }
+    }
+    ToggleCard {
+        icon-font: root.icon-font; glyph: "\u{e8a5}";
+        title: "Use nearby text";
+        detail: "Send up to 2,000 characters around your cursor so punctuation and wording flow. Never from password fields.";
+        checked <=> root.context; enabled: root.available && root.cleanup;
+        toggled => { root.context-changed(); }
+    }
+    Card {
+        CardHeader {
+            icon-font: root.icon-font; glyph: "\u{e82d}";
+            title: "Dictionary";
+            detail: "Names, file paths, and code symbols to spell exactly.";
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            entry := LineEdit {
+                placeholder-text: "Add a canonical spelling";
+                enabled: root.dictionary.length < root.dictionary-limit;
+                accepted => { root.add-entry(self.text); self.text = ""; }
+            }
+            Button {
+                text: "Add";
+                enabled: entry.text != "" && root.dictionary.length < root.dictionary-limit;
+                clicked => { root.add-entry(entry.text); entry.text = ""; }
+            }
+        }
+        for word[index] in root.dictionary: HorizontalLayout {
+            spacing: 8px;
+            Text { text: word; color: Palette.foreground; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+            Button { text: "Remove"; clicked => { root.remove-entry(index); } }
+        }
+        Description { text: root.dictionary.length + "/" + root.dictionary-limit; }
+    }
+}

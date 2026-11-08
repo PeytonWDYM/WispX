@@ -28,6 +28,12 @@ To update, download the new `WispX.exe` and run it.
 
 Left-click the tray icon to open **Options**, where you can change the shortcut, microphone, language, sounds, idle pill, and start with Windows. Ctrl + Win is the default shortcut.
 
+The **Cleanup** page controls a second pass that fixes punctuation, removes filler words, and keeps your corrected intent. It is on by default and requires Codex signed in with a ChatGPT account; API-key sign-ins do not qualify. Cleanup uses `gpt-6-luna` through Codex's private responses endpoint. If it fails, takes more than eight seconds, returns no text, or your transcript exceeds 4,000 characters, WispX uses the original transcript.
+
+**Use nearby text** is also on by default. When recording starts, WispX reads up to 2,000 characters around your cursor through Windows UI Automation and sends them only with cleanup. Password fields and WispX's own windows are excluded, and captured text is never logged. Where an app exposes a whole value without a caret position, WispX uses the value's tail. Apps that do not expose text, or respond too slowly, simply provide no context. You can turn this off independently of cleanup.
+
+Add canonical names, file paths, and code symbols to the **Dictionary** so cleanup can spell them exactly. WispX saves up to 200 entries and sends the first 100 with each cleanup request. Entries are trimmed and exact duplicates are ignored; casing and punctuation are preserved.
+
 The tray menu also has copy last transcript, How to use, and uninstall.
 
 ## Notes
@@ -58,7 +64,7 @@ cargo test --lib
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e.ps1
 ```
 
-The E2E script needs `ffprobe` and `ffmpeg` on PATH. It makes a repeatable 16 kHz mono WAV with Windows speech synthesis, encodes and transcribes it with your real Codex login, checks the transcript, walks the pill through its states, takes Options screenshots, and exports the sounds. Its files go in `artifacts/e2e/`: `selftest.log` records the transcript and WebM versus equivalent WAV size, `selftest.webm` is the exact upload, `ffprobe.json` records independent container inspection, and `decoded.wav`/`ffmpeg.log` verify clean decoding. These development modes don't install, create a tray icon, register a hook, or contact an existing WispX instance.
+The E2E script needs `ffprobe` and `ffmpeg` on PATH. It makes a repeatable 16 kHz mono WAV with Windows speech synthesis, encodes it to Opus/WebM, transcribes it with your real Codex login, and checks the transcript. It then runs the real cleanup pass with a `WispX` dictionary entry and fixed surrounding text, checks that the old `Wispecs` recognition mistake gets corrected, and checks caret context against a small Win32 Edit control the selftest owns. It also walks the pill through its states, screenshots all five Options pages, and exports the sounds. Its files go in `artifacts/e2e/`: `selftest.log` has the transcripts, timings and upload sizes, `selftest.webm` is the exact upload, `ffprobe.json` is an independent container check, and `decoded.wav`/`ffmpeg.log` confirm it decodes cleanly. These development modes don't install, create a tray icon, register a hook, or contact an existing WispX instance, and the context test reads only its own fixed text.
 
 On Linux, `bash scripts/ci-linux.sh` verifies the portable core and cross-builds `target/x86_64-pc-windows-gnu/release/WispX.exe`. It downloads Rust and extracts MinGW GCC packages into user-owned directories, along with ALSA development packages if needed. No sudo, CMake, NASM, or Perl is needed. Linux only builds the core for now; it doesn't run a dictation app.
 
@@ -77,7 +83,7 @@ src/
   hotkey.rs          shortcut model and settings serialization
   hotkey_machine.rs  physical-key state machine and capture
   audio/             CPAL recording, PCM, Opus/WebM uploads, WAV cue sounds
-  transcribe/        Codex login, token refresh and ChatGPT client
+  transcribe/        Codex login, ChatGPT transcription with retries, cleanup pass
   ui/                Options behavior and screenshot tour
   platform/windows/  hook, clipboard, tray, pill, install, startup, instance events
 scripts/             repeatable E2E and sudo-free Linux cross-build

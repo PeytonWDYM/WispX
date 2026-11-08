@@ -3,7 +3,10 @@ use crate::{
     audio::recorder::{self, Recorder},
     hotkey::Hotkey,
     settings::{Settings, SettingsStore},
-    transcribe::auth,
+    transcribe::{
+        auth,
+        cleanup::{MAX_DICTIONARY_ENTRIES, normalize_dictionary},
+    },
 };
 use slint::{
     ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel,
@@ -88,6 +91,10 @@ impl Options {
         {
             let settings = &store.borrow().value;
             window.set_sounds(settings.sounds);
+            window.set_cleanup(settings.cleanup);
+            window.set_cleanup_context(settings.cleanup_context);
+            window.set_dictionary(strings(settings.dictionary.clone()));
+            window.set_dictionary_limit(MAX_DICTIONARY_ENTRIES as i32);
             window.set_version(env!("CARGO_PKG_VERSION").into());
             window.set_idle_pill(settings.idle_pill);
             window.set_startup(host.as_ref().is_some_and(|h| h.startup()));
@@ -153,6 +160,37 @@ impl Options {
             }
         });
         let weak = Rc::downgrade(&ui);
+        ui.window.on_dictionary_add(move |entry| {
+            if let Some(ui) = weak.upgrade() {
+                let entries = {
+                    let mut store = ui.store.borrow_mut();
+                    store.value.dictionary = normalize_dictionary(
+                        store
+                            .value
+                            .dictionary
+                            .iter()
+                            .map(String::as_str)
+                            .chain(std::iter::once(entry.as_str())),
+                    );
+                    store.value.dictionary.clone()
+                };
+                ui.window.set_dictionary(strings(entries));
+                ui.save();
+            }
+        });
+        let weak = Rc::downgrade(&ui);
+        ui.window.on_dictionary_remove(move |index| {
+            if let Some(ui) = weak.upgrade() {
+                let entries = {
+                    let mut store = ui.store.borrow_mut();
+                    store.value.dictionary.remove(index as usize);
+                    store.value.dictionary.clone()
+                };
+                ui.window.set_dictionary(strings(entries));
+                ui.save();
+            }
+        });
+        let weak = Rc::downgrade(&ui);
         ui.window.window().on_close_requested(move || {
             if let Some(ui) = weak.upgrade() {
                 ui.cleanup();
@@ -186,8 +224,8 @@ impl Options {
                             && event.physical_key == PhysicalKey::Code(KeyCode::Tab)
                             && modifiers.get().control_key() =>
                     {
-                        let step = if modifiers.get().shift_key() { 3 } else { 1 };
-                        ui.window.set_page((ui.window.get_page() + step) % 4);
+                        let step = if modifiers.get().shift_key() { 4 } else { 1 };
+                        ui.window.set_page((ui.window.get_page() + step) % 5);
                         return EventResult::PreventDefault;
                     }
                     _ => {}
@@ -215,6 +253,9 @@ impl Options {
         Ok(())
     }
     fn refresh_account(&self) {
+        self.window.set_cleanup_available(
+            auth::login().is_some_and(|login| login.mode == auth::AuthMode::ChatGpt),
+        );
         let email = auth::email();
         self.window.set_signed_in(email.is_some());
         self.window.set_status(email.as_ref().map_or_else(
@@ -326,6 +367,14 @@ impl Options {
                 self.show_keys(true);
             }
             Action::TestMicrophone => self.toggle_test(),
+            Action::Cleanup => {
+                self.store.borrow_mut().value.cleanup = self.window.get_cleanup();
+                self.save();
+            }
+            Action::CleanupContext => {
+                self.store.borrow_mut().value.cleanup_context = self.window.get_cleanup_context();
+                self.save();
+            }
             Action::Sounds => {
                 self.store.borrow_mut().value.sounds = self.window.get_sounds();
                 self.save();
