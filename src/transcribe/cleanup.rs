@@ -38,7 +38,7 @@ fn prompt(transcript: &str, surrounding: &str, dictionary: &[String]) -> String 
         .join("\n");
     let mut text = String::new();
     if !surrounding.is_empty() {
-        text.push_str(&format!("Surrounding text:\n{surrounding}\n"));
+        text.push_str(&format!("Surrounding text ([cursor] marks where the transcript will be inserted; adjust capitalization to continue the text before it, and return only the transcript):\n{surrounding}\n"));
     }
     text.push_str("Dictionary (canonical entries; use exact spelling, casing, and punctuation when they match):\n");
     text.push_str(if entries.is_empty() {
@@ -62,6 +62,40 @@ fn fallback(raw: String, reply: Option<String>) -> String {
     reply
         .filter(|text| !text.trim().is_empty())
         .map_or(raw, |text| text.trim().to_owned())
+}
+
+/// Add a word separator only when a single known insertion point requires one.
+/// UIA already preserves surrounding whitespace; plain ValuePattern context cannot locate a caret.
+pub fn join_context(text: String, surrounding: &str) -> String {
+    let Some((before, after)) = surrounding.split_once("[cursor]") else {
+        return text;
+    };
+    if after.contains("[cursor]") {
+        return text;
+    }
+    let mut preceding = before.chars().rev();
+    let (Some(previous), Some(first)) = (preceding.next(), text.chars().next()) else {
+        return text;
+    };
+    // A straight quote opens at a boundary; after text it closes a quotation
+    // or a possessive. Curly opening quotes are unambiguous.
+    let opens_quote = matches!(previous, '"' | '\'')
+        && preceding.next().is_none_or(|ch| {
+            ch.is_whitespace()
+                || matches!(ch, '(' | '[' | '{' | '"' | '\'' | '\u{201c}' | '\u{2018}')
+        });
+    if previous.is_whitespace()
+        || opens_quote
+        || matches!(previous, '(' | '[' | '{' | '\u{201c}' | '\u{2018}')
+        || first.is_whitespace()
+        || matches!(
+            first,
+            '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\u{201d}' | '\u{2019}'
+        )
+    {
+        return text;
+    }
+    format!(" {text}")
 }
 
 /// Read complete SSE frames; done supersedes deltas, and a later failure wins.
@@ -189,6 +223,48 @@ impl ChatGpt {
 
 #[cfg(test)]
 mod tests {
+    // Joining failures: missing/ambiguous caret, empty text or prefix, duplicate whitespace,
+    // a space after an opening bracket/quote, or a space before closing punctuation.
+    // Quote boundary failures: treating a closing straight quote or possessive apostrophe
+    // as an opening quote glues the next word; opening quotes after whitespace/brackets
+    // must still suppress a separator. Cases added before correcting the quote rule.
+    // Prompt failures: an unexplained insertion marker or instructions that ask for context
+    // to be repeated rather than adjusting only the transcript's initial capitalization.
+    #[test]
+    fn joins_only_when_the_known_caret_needs_a_word_separator() {
+        for (context, text, expected) in [
+            ("testing the[cursor]", "system.", " system."),
+            ("testing the [cursor]", "system.", "system."),
+            ("testing the\n[cursor]", "system.", "system."),
+            ("testing the\t[cursor]", "system.", "system."),
+            ("[cursor]after", "System.", "System."),
+            ("plain context", "System.", "System."),
+            ("a[cursor]b[cursor]", "system", "system"),
+            ("the[cursor]", " system", " system"),
+            ("the[cursor]", "", ""),
+            ("the[cursor]", ".", "."),
+            ("the[cursor]", ", yes", ", yes"),
+            ("the[cursor]", ")", ")"),
+            ("\u{00e9}[cursor]", "word", " word"),
+            (
+                "We call it \"WispX\"[cursor]",
+                "and it works.",
+                " and it works.",
+            ),
+            ("The developers'[cursor]", "tools", " tools"),
+            ("He said \"[cursor]", "hello", "hello"),
+            ("He said '[cursor]", "hello", "hello"),
+            ("He said (\"[cursor]", "hello", "hello"),
+        ] {
+            assert_eq!(join_context(text.into(), context), expected);
+        }
+        for opening in ['(', '[', '{', '"', '\'', '\u{201c}', '\u{2018}'] {
+            assert_eq!(
+                join_context("word".into(), &format!("{opening}[cursor]")),
+                "word"
+            );
+        }
+    }
     // Failure modes, written before implementation:
     // Prompt: wrong separators/order, an empty surrounding block, Unicode split at a byte
     // boundary, context over 2,000 chars, dictionary over 100, or transcript truncation.
@@ -208,7 +284,7 @@ mod tests {
                 "  before[cursor]after  ",
                 &[" WispX ".into(), " ".into()]
             ),
-            "Surrounding text:\nbefore[cursor]after\nDictionary (canonical entries; use exact spelling, casing, and punctuation when they match):\nWispX\nTranscript:\n um hello "
+            "Surrounding text ([cursor] marks where the transcript will be inserted; adjust capitalization to continue the text before it, and return only the transcript):\nbefore[cursor]after\nDictionary (canonical entries; use exact spelling, casing, and punctuation when they match):\nWispX\nTranscript:\n um hello "
         );
         assert_eq!(
             prompt("hello", " \n", &[]),

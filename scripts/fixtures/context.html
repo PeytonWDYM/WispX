@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WispX isolated context fixture</title>
+<style>body{font:20px system-ui;padding:30px}textarea,input,[contenteditable]{display:block;width:600px;margin:20px;padding:12px;border:1px solid #888}</style>
+<textarea aria-label="WispX textarea">Before the caret. After the caret.</textarea>
+<input aria-label="WispX input" value="Before the caret. After the caret.">
+<div contenteditable="true" aria-label="WispX contenteditable">Before the caret. After the caret.</div>
+<input type="password" aria-label="WispX password" value="fixture password">
+<script>
+// Set each field's insertion point when UI Automation focuses it, without changing its text.
+for (const field of document.querySelectorAll('textarea,input,[contenteditable]')) {
+  field.addEventListener('beforeinput', event => event.preventDefault());
+  field.addEventListener('focus', () => {
+    if (field.isContentEditable) {
+      const range = document.createRange();
+      range.setStart(field.firstChild, 18);
+      range.collapse(true);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } else { field.setSelectionRange(18, 18); }
+  });
+}
+document.querySelector('textarea').focus();
+</script>

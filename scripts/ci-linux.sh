@@ -31,11 +31,13 @@ if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists alsa; then
         for package in ./*.deb; do dpkg-deb -x "$package" "$sysroot"; done
     )
     export PATH="$sysroot/usr/bin:$PATH"
-    export LD_LIBRARY_PATH="$sysroot/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+    # Empty components search the working directory. Besides loading unintended
+    # libraries, GCC can mistake a local specs/ directory for its specs file.
+    export LD_LIBRARY_PATH="$sysroot/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     export PKG_CONFIG="$sysroot/usr/bin/pkgconf"
     export PKG_CONFIG_PATH="$sysroot/usr/lib/x86_64-linux-gnu/pkgconfig"
     export PKG_CONFIG_SYSROOT_DIR="$sysroot"
-    export LIBRARY_PATH="$sysroot/usr/lib/x86_64-linux-gnu:${LIBRARY_PATH:-}"
+    export LIBRARY_PATH="$sysroot/usr/lib/x86_64-linux-gnu${LIBRARY_PATH:+:$LIBRARY_PATH}"
 fi
 
 cargo fmt --check

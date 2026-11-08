@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 $Exe = (Resolve-Path -LiteralPath $Exe).Path
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path -LiteralPath $OutDir).Path
+& "$PSScriptRoot/context-e2e.ps1" -Exe $Exe -OutDir (Join-Path $OutDir 'context')
 Add-Type -AssemblyName System.Speech
 Get-Command ffprobe, ffmpeg -ErrorAction Stop | Out-Null
 $speech = New-Object System.Speech.Synthesis.SpeechSynthesizer
