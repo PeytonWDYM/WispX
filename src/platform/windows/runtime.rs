@@ -316,6 +316,7 @@ impl Runtime {
                             &surrounding,
                             &settings.dictionary,
                         );
+                        let text = crate::transcribe::cleanup::join_context(text, &surrounding);
                         let pasted = !text.is_empty() && clipboard::paste(&text, target);
                         Ok((text, pasted))
                     })();
