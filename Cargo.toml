@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 base64 = "0.22"
 cpal = "0.16"
+opus-rs = "=0.1.41"
 # Slint already uses fontique; enable its supported fontconfig runtime loader.
 fontique = { version = "0.11", features = ["fontconfig-dlopen"] }
 png = "0.18"
