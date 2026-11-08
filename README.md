@@ -35,6 +35,8 @@ The tray menu also has copy last transcript, How to use, and uninstall.
 - WispX calls ChatGPT's `/backend-api/transcribe` endpoint. It's not a public API, so it can change or break without warning, and using it may go against OpenAI's terms.
 - ChatGPT keeps the audio for 30 days, the same as the app's own dictation.
 - WispX reads `%USERPROFILE%\.codex\auth.json`. If the token has expired, it refreshes it and writes the new one back so Codex stays signed in.
+- Uploads use mono Opus in WebM (`audio/webm`), encoded from the microphone's 16 kHz PCM at 32 kbps with 20 ms voice frames. A ten-minute recording is about 2.6 MB including the container, versus 19.2 MB as WAV. Encoding uses pure-Rust `opus-rs`, with no additional native build tools.
+- Network failures and HTTP 408/500/502/503/504 get up to three attempts, starting with 500 ms and 1 s delays. WispX respects longer `Retry-After` delays up to 10 s; token refresh has its own retry. Server error codes produce specific messages for short/oversized recordings, unsupported audio, expired/revoked tokens, rate limits, and busy models.
 - It can't type into apps running as administrator.
 
 ## Build
@@ -56,7 +58,7 @@ cargo test --lib
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e.ps1
 ```
 
-The E2E script makes a repeatable 16 kHz mono WAV with Windows speech synthesis, transcribes it with your real Codex login, walks the pill through its states, takes Options screenshots, and exports the sounds. Its files go in `artifacts/e2e/`. These development modes don't install, create a tray icon, register a hook, or contact an existing WispX instance.
+The E2E script needs `ffprobe` and `ffmpeg` on PATH. It makes a repeatable 16 kHz mono WAV with Windows speech synthesis, encodes and transcribes it with your real Codex login, checks the transcript, walks the pill through its states, takes Options screenshots, and exports the sounds. Its files go in `artifacts/e2e/`: `selftest.log` records the transcript and WebM versus equivalent WAV size, `selftest.webm` is the exact upload, `ffprobe.json` records independent container inspection, and `decoded.wav`/`ffmpeg.log` verify clean decoding. These development modes don't install, create a tray icon, register a hook, or contact an existing WispX instance.
 
 On Linux, `bash scripts/ci-linux.sh` verifies the portable core and cross-builds `target/x86_64-pc-windows-gnu/release/WispX.exe`. It downloads Rust and extracts MinGW GCC packages into user-owned directories, along with ALSA development packages if needed. No sudo, CMake, NASM, or Perl is needed. Linux only builds the core for now; it doesn't run a dictation app.
 
@@ -74,7 +76,7 @@ src/
   settings.rs        existing settings.json, atomic saves and notifications
   hotkey.rs          shortcut model and settings serialization
   hotkey_machine.rs  physical-key state machine and capture
-  audio/             CPAL recording, PCM, WAV encoding, synthesized sounds
+  audio/             CPAL recording, PCM, Opus/WebM uploads, WAV cue sounds
   transcribe/        Codex login, token refresh and ChatGPT client
   ui/                Options behavior and screenshot tour
   platform/windows/  hook, clipboard, tray, pill, install, startup, instance events
