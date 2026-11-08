@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     app::{Controller, DictationError, Finish, MessageKind, Pill},
-    audio::{sounds::Cue, wav},
+    audio::{opus, sounds::Cue},
     hotkey_machine::HotkeyEvent,
     settings::{Settings, SettingsStore},
     transcribe::{ChatGpt, auth},
@@ -284,7 +284,8 @@ impl Runtime {
                         let audio = recorder.stop()?;
                         let text = client
                             .transcribe(
-                                &wav::encode(&audio.pcm, 16_000),
+                                &opus::encode(&audio.pcm)
+                                    .map_err(crate::transcribe::TranscribeError::from)?,
                                 audio.duration_ms,
                                 &language,
                             )?

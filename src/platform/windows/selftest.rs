@@ -2,6 +2,7 @@
 use super::overlay::Overlay;
 use crate::{
     app::{MessageKind, Pill},
+    audio::opus,
     transcribe::ChatGpt,
 };
 use std::{
@@ -39,6 +40,7 @@ fn step(step: Step) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 pub fn run(wav: PathBuf, out: PathBuf, language: String) -> Result<(), Box<dyn std::error::Error>> {
+    let upload_path = out.with_extension("webm");
     let overlay = Rc::new(Overlay::new(true)?);
     OVERLAY.with(|o| *o.borrow_mut() = Some(overlay));
     if let Some(parent) = out.parent() {
@@ -75,14 +77,30 @@ pub fn run(wav: PathBuf, out: PathBuf, language: String) -> Result<(), Box<dyn s
             step(Step::Show(Pill::Transcribing))?;
             mark("transcribing")?;
             let start = Instant::now();
-            let bytes = fs::read(wav)?;
+            let reader = hound::WavReader::open(wav)?;
+            let spec = reader.spec();
+            if spec.channels != 1
+                || spec.sample_rate != 16_000
+                || spec.bits_per_sample != 16
+                || spec.sample_format != hound::SampleFormat::Int
+            {
+                return Err("Selftest input must be 16 kHz mono signed 16-bit PCM WAV".into());
+            }
+            let pcm = reader
+                .into_samples::<i16>()
+                .collect::<Result<Vec<_>, _>>()?;
+            let duration_ms = pcm.len() as u64 * 1000 / 16_000;
+            let bytes = opus::encode(&pcm)?;
+            fs::write(&upload_path, &bytes)?;
+            mark(&format!(
+                "UPLOAD: {} bytes WebM vs {} bytes equivalent WAV; {duration_ms} ms; {}",
+                bytes.len(),
+                44 + pcm.len() * 2,
+                upload_path.display()
+            ))?;
             let client = ChatGpt::default();
             client.warmup();
-            let transcription = client.transcribe(
-                &bytes,
-                bytes.len().saturating_sub(44) as u64 / 32,
-                &language,
-            );
+            let transcription = client.transcribe(&bytes, duration_ms, &language);
             match &transcription {
                 Ok(text) => mark(&format!(
                     "TRANSCRIPT ({} ms): {text}",
