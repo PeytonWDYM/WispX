@@ -1,4 +1,5 @@
 //! CPAL capture downmixes and resamples to 16 kHz mono i16 PCM.
+use super::resampler::Resampler;
 use cpal::{
     Sample, SampleFormat, SizedSample, Stream,
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -78,26 +79,8 @@ struct CaptureStream {
 }
 struct Capture {
     pcm: Vec<i16>,
-    input_rate: f64,
-    position: u64,
-    next_output: f64,
-    previous: f32,
+    resampler: Resampler,
     failure: Option<String>,
-}
-impl Capture {
-    // Linear interpolation retains phase across callbacks and across channel frames.
-    fn push(&mut self, sample: f32) {
-        let position = self.position as f64;
-        while self.next_output <= position {
-            let fraction = (self.next_output - (position - 1.0)).clamp(0.0, 1.0) as f32;
-            let value = self.previous + (sample - self.previous) * fraction;
-            self.pcm
-                .push((value.clamp(-1.0, 1.0) * 32768.0).clamp(-32768.0, 32767.0) as i16);
-            self.next_output += self.input_rate / f64::from(RATE);
-        }
-        self.previous = sample;
-        self.position += 1;
-    }
 }
 pub fn input_devices() -> Result<Vec<String>, RecordError> {
     cpal::default_host()
@@ -175,10 +158,7 @@ impl CaptureStream {
         let config = supported.config();
         let data = Arc::new(Mutex::new(Capture {
             pcm: Vec::new(),
-            input_rate: f64::from(config.sample_rate.0),
-            position: 0,
-            next_output: 0.0,
-            previous: 0.0,
+            resampler: Resampler::new(config.sample_rate.0),
             failure: None,
         }));
         let stream = match supported.sample_format() {
@@ -237,7 +217,8 @@ where
             for frame in buffer.chunks_exact(channels) {
                 let mono =
                     frame.iter().map(|&s| s.to_sample::<f32>()).sum::<f32>() / channels as f32;
-                data.push(mono);
+                let Capture { resampler, pcm, .. } = &mut *data;
+                resampler.push(mono, pcm);
             }
             let samples = &data.pcm[start..];
             let sum = samples
