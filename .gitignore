@@ -1,7 +1,5 @@
-bin/
-obj/
-.vs/
-*.user
+target/
+artifacts/
 
 # AI tooling and planning notes
 CLAUDE.md

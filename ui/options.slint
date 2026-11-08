@@ -1,0 +1,180 @@
+import { Button, ComboBox, Palette, ScrollView } from "std-widgets.slint";
+import { Card, CardHeader, Heading, Description, ToggleCard } from "components.slint";
+export enum Action { check-account, change-shortcut, reset-shortcut, test-microphone, sounds, idle-pill, startup, close, page-changed }
+export component OptionsWindow inherits Window {
+    in property <string> version;
+    title: "WispX Options";
+    preferred-width: 820px;
+    preferred-height: 560px;
+    min-width: 680px;
+    min-height: 460px;
+    in property <string> text-font: "sans-serif";
+    in property <string> icon-font: "sans-serif";
+    default-font-family: root.text-font;
+    default-font-size: 14px;
+    icon: @image-url("../assets/wispx.png");
+    background: Palette.background;
+    in-out property <int> page: 0;
+    in-out property <bool> entered: false;
+    in-out property <bool> page-ready: false;
+    in-out property <bool> keycaps-ready: true;
+    in-out property <bool> account-ready: true;
+    in property <bool> tour: false;
+    always-on-top: root.tour;
+    in property <string> status;
+    in property <string> account-detail;
+    in property <bool> signed-in;
+    in property <[string]> keys;
+    in-out property <bool> capturing;
+    in property <string> error;
+    in property <[string]> microphones;
+    in-out property <int> microphone;
+    in property <[string]> languages;
+    in-out property <int> language;
+    in-out property <bool> testing;
+    in property <float> level;
+    in property <string> test-error;
+    in-out property <bool> sounds;
+    in-out property <bool> idle-pill;
+    in-out property <bool> startup;
+    callback action(Action);
+    callback microphone-selected(int);
+    callback language-selected(int);
+    changed page => { root.action(Action.page-changed); }
+    forward-focus: keys-scope;
+    keys-scope := FocusScope {
+        opacity: root.entered ? 1 : 0;
+        transform-scale-x: root.entered ? 100% : 97%;
+        transform-scale-y: root.entered ? 100% : 97%;
+        transform-origin: { x: self.width/2, y: self.height/2 };
+        animate opacity, transform-scale-x, transform-scale-y { duration: root.entered ? 200ms : 0ms; easing: cubic-bezier(0.333333,1,0.666667,1); }
+        key-pressed(event) => {
+            if (event.text == Key.Escape) { root.action(Action.close); return accept; }
+            return reject;
+        }
+        HorizontalLayout {
+            spacing: 0px;
+            Rectangle {
+                width: 220px;
+                background: Palette.background;
+                Rectangle { x: parent.width - 1px; width: 1px; background: Palette.border; }
+                VerticalLayout {
+                    padding: 12px; padding-top: 24px; spacing: 4px;
+                    for name[index] in ["Account", "Shortcut", "Audio", "General"]: Rectangle {
+                        height: 46px; border-radius: 6px;
+                        background: root.page == index || hit.has-hover ? Palette.alternate-background : transparent;
+                        Text { x: 40px; text: name; color: Palette.foreground; vertical-alignment: center; }
+                        Text { x: 16px; text: ["\u{e77b}", "\u{e765}", "\u{e720}", "\u{e713}"][index]; font-family: root.icon-font; color: Palette.foreground; vertical-alignment: center; }
+                        hit := TouchArea { clicked => { root.page = index; } }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                    Text { text: "WispX"; color: Palette.alternate-foreground; font-size: 12px; height: 36px; x: 16px; }
+                }
+                Rectangle {
+                    x: 12px; y: 36px + root.page * 50px; width: 3px; height: 22px; border-radius: 2px; background: Palette.accent-background;
+                    animate y { duration: 250ms; easing: cubic-bezier(0.333333,1,0.666667,1); }
+                }
+            }
+            Rectangle { ScrollView {
+                width: parent.width; height: parent.height;
+                y: root.page-ready ? 0px : 12px;
+                opacity: root.page-ready ? 1 : 0;
+                animate y, opacity { duration: root.page-ready ? 220ms : 0ms; easing: cubic-bezier(0.333333,1,0.666667,1); }
+                content-width: self.width;
+                VerticalLayout {
+                    padding: 28px; padding-top: 24px; spacing: 12px;
+                    Heading { text: ["Account", "Shortcut", "Audio", "General"][root.page]; }
+                    Rectangle { height: 12px; }
+                    if root.page == 0: Card {
+                        HorizontalLayout {
+                            spacing: 16px;
+                            Text {
+                                text: root.signed-in ? "\u{e73e}" : "\u{e7ba}"; width: 20px; font-family: root.icon-font; font-size: 20px; color: root.signed-in ? #42a464 : #b88922; vertical-alignment: center;
+                                opacity: root.account-ready ? 1 : 0;
+                                transform-scale-x: root.account-ready ? 100% : 85%; transform-scale-y: root.account-ready ? 100% : 85%;
+                                transform-origin: { x:self.width/2,y:self.height/2 };
+                                animate opacity,transform-scale-x,transform-scale-y { duration: root.account-ready ? 200ms : 0ms; easing:cubic-bezier(0.333333,1,0.666667,1); }
+                            }
+                            VerticalLayout {
+                                spacing: 5px;
+                                Text { text: root.status; font-size: 15px; font-weight: 600; color: Palette.foreground; wrap: word-wrap; }
+                                Description { text: root.account-detail; }
+                            }
+                            Button { text: "Check again"; clicked => { root.action(Action.check-account); } }
+                        }
+                    }
+                    if root.page == 1: VerticalLayout {
+                        vertical-stretch: 0;
+                        spacing: 12px;
+                        Card {
+                            border-color: root.capturing ? Palette.accent-background : Palette.border;
+                            Text { text: "Dictation shortcut"; font-weight: 600; font-size: 15px; color: Palette.foreground; }
+                            Rectangle { height: 12px; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                if root.capturing: Text { text: "Press your shortcut…"; font-size: 20px; color: Palette.foreground; vertical-alignment: center; }
+                                if !root.capturing: HorizontalLayout {
+                                    horizontal-stretch: 0;
+                                    spacing: 10px;
+                                    for key[index] in root.keys: HorizontalLayout {
+                                        spacing: 10px;
+                                        if index > 0: Text { text: "+"; font-size: 22px; color: Palette.foreground; vertical-alignment: center; }
+                                        Rectangle {
+                                            horizontal-stretch: 0;
+                                            opacity: root.keycaps-ready ? 1 : 0;
+                                            transform-scale-x: root.keycaps-ready ? 100% : 85%; transform-scale-y: root.keycaps-ready ? 100% : 85%;
+                                            transform-origin: {x:self.width/2,y:self.height/2};
+                                            animate opacity,transform-scale-x,transform-scale-y { duration:root.keycaps-ready ? 200ms : 0ms; delay:root.keycaps-ready ? index*40ms : 0ms; easing:cubic-bezier(0.333333,1,0.666667,1); }
+                                            border-radius: 6px; border-width: 1px; border-color: Palette.border; background: Palette.control-background;
+                                            HorizontalLayout { padding: 12px; Text { text: key; font-size: 19px; font-weight: 600; color: Palette.foreground; } }
+                                        }
+                                    }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                Button { text: root.capturing ? "Cancel" : "Change…"; primary: !root.capturing; min-width: 110px; height: 32px; horizontal-stretch: 0; clicked => { root.action(Action.change-shortcut); } }
+                            }
+                            Description { text: "Hold to talk · add Space for hands-free · Esc cancels"; }
+                        }
+                        if root.error != "": Description { text: root.error; color: #b88922; }
+                        HorizontalLayout {
+                            Button { text: "Reset to Ctrl + Win"; horizontal-stretch: 0; clicked => { root.action(Action.reset-shortcut); } }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+                    if root.page == 2: VerticalLayout {
+                        vertical-stretch: 0;
+                        spacing: 12px;
+                        Card {
+                            CardHeader { icon-font: root.icon-font; glyph: "\u{e720}"; title: "Microphone"; detail: "Choose the microphone used for dictation."; }
+                            ComboBox { model: root.microphones; current-index <=> root.microphone; selected(_) => { root.microphone-selected(self.current-index); } }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                Button { text: "Test microphone"; checkable: true; checked <=> root.testing; clicked => { root.action(Action.test-microphone); } }
+                                HorizontalLayout {
+                                    spacing: 3px;
+                                    for i in 24: Rectangle { height: 14px; border-radius: 2px; background: i < ceil(root.level * 24) ? Palette.accent-background : Palette.alternate-background; }
+                                }
+                            }
+                            if root.test-error != "": Description { text: root.test-error; }
+                        }
+                        Card {
+                            CardHeader { icon-font: root.icon-font; glyph: "\u{e774}"; title: "Language"; detail: "Auto-detect, or give transcription a language hint."; }
+                            ComboBox { model: root.languages; current-index <=> root.language; selected(_) => { root.language-selected(self.current-index); } }
+                        }
+                    }
+                    if root.page == 3: VerticalLayout {
+                        vertical-stretch: 0;
+                        spacing: 12px;
+                        ToggleCard { icon-font: root.icon-font; glyph: "\u{e767}"; title: "Play sounds"; detail: "Audio cues when dictation starts and stops."; checked <=> root.sounds; toggled => { root.action(Action.sounds); } }
+                        ToggleCard { icon-font: root.icon-font; glyph: "\u{e890}"; title: "Show idle pill"; detail: "Keep a small indicator above the taskbar."; checked <=> root.idle-pill; toggled => { root.action(Action.idle-pill); } }
+                        ToggleCard { icon-font: root.icon-font; glyph: "\u{e7e8}"; title: "Start with Windows"; detail: "Have WispX ready when you sign in."; checked <=> root.startup; toggled => { root.action(Action.startup); } }
+                        Description { text: "WispX " + root.version; }
+                        Description { text: "Built with Slint · slint.dev · Slint Royalty-free License"; }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                }
+            } }
+        }
+    }
+}
+

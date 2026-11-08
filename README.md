@@ -39,25 +39,48 @@ The tray menu also has copy last transcript, How to use, and uninstall.
 
 ## Build
 
-Needs the .NET 9 SDK.
+Needs Rust 1.92 or newer. On Windows, install Visual Studio's C++ build tools and Windows SDK.
 
 ```
-dotnet publish src -c Release
+cargo build --release
 ```
 
-The exe lands in `src/bin/Release/net9.0-windows/win-x64/publish/`.
+The exe lands in `target/release/WispX.exe`. Run it with `--portable` to skip installation while developing.
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-gnu.ps1` verifies the GNU target on Windows with a downloaded MinGW GCC toolchain and the same resources used by CI.
+
+```
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --lib
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e.ps1
+```
+
+The E2E script makes a repeatable 16 kHz mono WAV with Windows speech synthesis, transcribes it with your real Codex login, walks the pill through its states, takes Options screenshots, and exports the sounds. Its files go in `artifacts/e2e/`. These development modes don't install, create a tray icon, register a hook, or contact an existing WispX instance.
+
+On Linux, `bash scripts/ci-linux.sh` verifies the portable core and cross-builds `target/x86_64-pc-windows-gnu/release/WispX.exe`. It downloads Rust and extracts MinGW GCC packages into user-owned directories, along with ALSA development packages if needed. No sudo, CMake, NASM, or Perl is needed. Linux only builds the core for now; it doesn't run a dictation app.
 
 GitHub Actions builds every push and pull request; the exe is attached to each run under **Artifacts**. Pushing a tag like `v1.0.1` builds it and publishes a release with `WispX.exe` attached.
 
 ## Layout
 
 ```
+Cargo.toml, build.rs  crate, Slint compilation, Windows resources
+assets/              original icon, DPI manifest, version information
+ui/                  portable Fluent Options layout
 src/
-  App.xaml.cs         startup, dictation flow
-  Audio/              mic recording, sounds
-  Input/              configurable hotkey hook, pasting, Win32 calls
-  Transcription/      ChatGPT transcribe + Codex login
-  UI/                 overlay pill, tray, Options pages
-  Setup/              self-install, settings
-  Assets/             icon
+  main.rs            command-line entry points and startup
+  app.rs             dictation controller
+  settings.rs        existing settings.json, atomic saves and notifications
+  hotkey.rs          shortcut model and settings serialization
+  hotkey_machine.rs  physical-key state machine and capture
+  audio/             CPAL recording, PCM, WAV encoding, synthesized sounds
+  transcribe/        Codex login, token refresh and ChatGPT client
+  ui/                Options behavior and screenshot tour
+  platform/windows/  hook, clipboard, tray, pill, install, startup, instance events
+scripts/             repeatable E2E and sudo-free Linux cross-build
 ```
+
+Options is built with [Slint](https://slint.dev), used under the [Slint Royalty-free License](https://slint.dev/license/royalty-free/2.0/). The General page credits it too.
+
+[![Made with Slint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev)
