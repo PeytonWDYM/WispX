@@ -1,5 +1,6 @@
 target/
 artifacts/
+dist/
 
 # AI tooling and planning notes
 CLAUDE.md

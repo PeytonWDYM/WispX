@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+# One runner builds everything, so a new push to a PR cancels that PR's stale run.
+# Pushes to main and release tags always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     # Builds on the Tailscale self-hosted Linux runner. Fork PRs stay on a
@@ -19,14 +25,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # checkout wipes ignored files, so the toolchains and build cache live outside the
+      # workspace and survive between runs on the self-hosted runner.
       - name: Verify core and cross-build Windows
         shell: bash
-        run: bash scripts/ci-linux.sh
+        run: |
+          export WISPX_TOOLS_DIR="$HOME/.cache/wispx/tools"
+          export CARGO_TARGET_DIR="$HOME/.cache/wispx/target"
+          bash scripts/ci-linux.sh
+          mkdir -p dist
+          cp "$CARGO_TARGET_DIR/x86_64-pc-windows-gnu/release/WispX.exe" dist/
 
       - uses: actions/upload-artifact@v4
         with:
           name: WispX
-          path: target/x86_64-pc-windows-gnu/release/WispX.exe
+          path: dist/WispX.exe
           if-no-files-found: error
 
   release:
