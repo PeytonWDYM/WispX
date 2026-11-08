@@ -232,17 +232,12 @@ pub fn run(wav: PathBuf, out: PathBuf, language: String) -> Result<(), Box<dyn s
                 "CONTEXT ({} ms): {captured:?}",
                 context_start.elapsed().as_millis()
             ))?;
+            // Native EDIT exposes only ValuePattern; its caret comes from EM_GETSEL.
             let expected = format!("{CONTEXT_BEFORE}[cursor]{CONTEXT_AFTER}");
-            // Native Win32 EDIT may expose only ValuePattern. In that case the
-            // documented fallback is the value's tail with the cursor marker at its end.
-            let value_fallback = format!("{CONTEXT_BEFORE}{CONTEXT_AFTER}[cursor]");
-            match captured.as_deref() {
-                Some(text) if text == expected => mark("CONTEXT: TextPattern caret matched")?,
-                Some(text) if text == value_fallback => mark(
-                    "CONTEXT: ValuePattern fallback matched; native EDIT exposes no TextPattern",
-                )?,
-                _ => return Err("Context did not match the fixed selftest EDIT text".into()),
+            if captured.as_deref() != Some(expected.as_str()) {
+                return Err("Context did not mark the caret in the fixed selftest EDIT".into());
             }
+            mark("CONTEXT: caret position matched")?;
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
             step(Step::ContextOpen(ContextField::Password, tx))?;
             let password = context::begin_selftest(rx.recv()?).and_then(context::Capture::finish);

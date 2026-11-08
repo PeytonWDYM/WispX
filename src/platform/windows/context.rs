@@ -7,6 +7,13 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use windows::Win32::{
+    Foundation::{LPARAM, WPARAM},
+    UI::{
+        Controls::EM_GETSEL,
+        WindowsAndMessaging::{SMTO_ABORTIFHUNG, SendMessageTimeoutW},
+    },
+};
 use windows::{
     Win32::{
         System::Com::{
@@ -122,16 +129,59 @@ fn capture(test_edit: Option<isize>) -> Option<String> {
         }
         let value: IUIAutomationValuePattern =
             element.GetCurrentPatternAs(UIA_ValuePatternId).ok()?;
-        let value = value.CurrentValue().ok()?.to_string();
-        let tail: String = value
-            .chars()
-            .rev()
-            .take(MAX_CONTEXT_CHARS - CURSOR.len())
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        (!tail.trim().is_empty()).then(|| format!("{tail}{CURSOR}"))
+        let value: Vec<u16> = value.CurrentValue().ok()?.to_vec();
+        if String::from_utf16_lossy(&value).trim().is_empty() {
+            return None;
+        }
+        Some(match edit_caret(&element) {
+            Some(caret) => {
+                let (before, after) = value.split_at(caret.min(value.len()));
+                let before = last_chars(&String::from_utf16_lossy(before), BEFORE_CHARS as usize);
+                let after: String = String::from_utf16_lossy(after)
+                    .chars()
+                    .take(AFTER_CHARS as usize)
+                    .collect();
+                format!("{before}{CURSOR}{after}")
+            }
+            // The caret is unknown, so send plain context (as Codex does) rather than guess.
+            None => last_chars(&String::from_utf16_lossy(&value), MAX_CONTEXT_CHARS),
+        })
+    }
+}
+
+fn last_chars(text: &str, count: usize) -> String {
+    let skip = text.chars().count().saturating_sub(count);
+    text.chars().skip(skip).collect()
+}
+
+/// Classic Win32 Edit controls expose only ValuePattern, but EM_GETSEL still reports
+/// their caret (a UTF-16 index into the same text). Other controls return `None`.
+fn edit_caret(element: &IUIAutomationElement) -> Option<usize> {
+    // SAFETY: EM_GETSEL with null pointers only returns positions; the timeout and
+    // SMTO_ABORTIFHUNG keep a hung target from blocking this worker.
+    unsafe {
+        if !element
+            .CurrentClassName()
+            .ok()?
+            .to_string()
+            .eq_ignore_ascii_case("Edit")
+        {
+            return None;
+        }
+        let hwnd = element.CurrentNativeWindowHandle().ok()?;
+        let mut result = 0_usize;
+        let sent = SendMessageTimeoutW(
+            hwnd,
+            EM_GETSEL,
+            WPARAM(0),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            100,
+            Some(&mut result),
+        );
+        // LOWORD is the selection start; 0xFFFF means it's past what the return value can hold.
+        let start = result & 0xFFFF;
+        (sent.0 != 0 && start != 0xFFFF).then_some(start)
     }
 }
 
