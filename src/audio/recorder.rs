@@ -184,8 +184,12 @@ impl CaptureStream {
     fn stop(self) -> Result<Recording, RecordError> {
         drop(self.stream);
         let mut data = self.data.lock().expect("audio callback does not panic");
-        if let Some(error) = data.failure.take() {
-            return Err(RecordError::Stream(error));
+        if data.pcm.is_empty() {
+            return Err(RecordError::Stream(
+                data.failure
+                    .take()
+                    .unwrap_or_else(|| "No audio captured".into()),
+            ));
         }
         let pcm = std::mem::take(&mut data.pcm);
         let duration_ms = pcm.len() as u64 * 1000 / u64::from(RATE);
