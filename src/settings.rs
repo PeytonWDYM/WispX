@@ -1,11 +1,11 @@
-//! Existing PascalCase settings and atomic persistence with live change notifications.
+//! Existing PascalCase settings and atomic persistence; the UI notifies its settings host.
 use crate::hotkey::Hotkey;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -36,11 +36,10 @@ impl Default for Settings {
         }
     }
 }
-/// The UI owns the value; subscribers receive a snapshot only after a successful save.
+/// The UI owns the value and calls OptionsHost::settings_changed after a successful save.
 pub struct SettingsStore {
     pub value: Settings,
     path: PathBuf,
-    listeners: Vec<Sender<Settings>>,
 }
 impl SettingsStore {
     pub fn load() -> io::Result<Self> {
@@ -61,16 +60,7 @@ impl SettingsStore {
             .ok()
             .and_then(|s| serde_json::from_slice(&s).ok())
             .unwrap_or_default();
-        Self {
-            value,
-            path,
-            listeners: Vec::new(),
-        }
-    }
-    pub fn subscribe(&mut self) -> Receiver<Settings> {
-        let (tx, rx) = mpsc::channel();
-        self.listeners.push(tx);
-        rx
+        Self { value, path }
     }
     pub fn save(&mut self) -> io::Result<()> {
         self.value.dictionary =
@@ -79,32 +69,50 @@ impl SettingsStore {
             &self.path,
             &self.path.with_extension("json.tmp"),
             &serde_json::to_vec_pretty(&self.value)?,
-        )?;
-        self.listeners
-            .retain(|tx| tx.send(self.value.clone()).is_ok());
-        Ok(())
+        )
     }
 }
 
-/// Syncs the new contents before atomically replacing the destination.
-pub(crate) fn atomic_write(path: &Path, tmp: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Syncs a uniquely created sibling before atomically replacing the destination.
+/// The legacy temp-path argument is ignored to keep existing auth callers compatible.
+pub(crate) fn atomic_write(path: &Path, _tmp: &Path, bytes: &[u8]) -> io::Result<()> {
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    #[cfg(windows)]
-    {
-        crate::platform::windows::files::replace(tmp, path)
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "Destination needs a filename")
+    })?;
+    let (tmp, mut file) = loop {
+        let mut name = name.to_os_string();
+        name.push(format!(
+            ".{}.{}.tmp",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        let tmp = path.with_file_name(name);
+        match OpenOptions::new().create_new(true).write(true).open(&tmp) {
+            Ok(file) => break (tmp, file),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    let result = (|| {
+        let written = file.write_all(bytes).and_then(|()| file.sync_all());
+        // Close even on a write/flush failure so Windows permits cleanup.
+        drop(file);
+        written?;
+        #[cfg(windows)]
+        {
+            crate::platform::windows::files::replace(&tmp, path)
+        }
+        #[cfg(not(windows))]
+        {
+            fs::rename(&tmp, path)
+        }
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    #[cfg(not(windows))]
-    {
-        fs::rename(tmp, path)
-    }
+    result
 }

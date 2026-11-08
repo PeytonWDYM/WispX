@@ -10,6 +10,7 @@ use std::{
 use windows::{
     Win32::{
         Foundation::{CloseHandle, HWND},
+        Globalization::{CSTR_EQUAL, CompareStringOrdinal},
         System::{
             Com::{
                 CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
@@ -23,12 +24,19 @@ use windows::{
 };
 fn local_dir() -> io::Result<PathBuf> {
     std::env::var_os("LOCALAPPDATA")
-        .map(|d| PathBuf::from(d).join("Programs/WispX"))
+        .map(|d| PathBuf::from(d).join("Programs").join("WispX"))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "LOCALAPPDATA is unavailable"))
 }
 fn shortcut_path() -> io::Result<PathBuf> {
     std::env::var_os("APPDATA")
-        .map(|d| PathBuf::from(d).join("Microsoft/Windows/Start Menu/Programs/WispX.lnk"))
+        .map(|d| {
+            PathBuf::from(d)
+                .join("Microsoft")
+                .join("Windows")
+                .join("Start Menu")
+                .join("Programs")
+                .join("WispX.lnk")
+        })
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "APPDATA is unavailable"))
 }
 fn shortcut() -> Result<(), Box<dyn std::error::Error>> {
@@ -60,10 +68,19 @@ pub fn ensure_installed(portable: bool) -> Result<bool, Box<dyn std::error::Erro
     let current = std::env::current_exe()?;
     let dir = local_dir()?;
     let installed = dir.join("WispX.exe");
-    if current
-        .to_string_lossy()
-        .eq_ignore_ascii_case(&installed.to_string_lossy())
-    {
+    // Canonicalization resolves separators, junctions and extended-length path prefixes.
+    // The destination need not exist yet on a first install.
+    let current_path = wide(fs::canonicalize(&current)?);
+    let already_installed = match fs::canonicalize(&installed) {
+        Ok(path) => {
+            let installed_path = wide(path);
+            // SAFETY: both slices contain valid UTF-16 paths; Windows performs ordinal case folding.
+            unsafe { CompareStringOrdinal(&current_path, &installed_path, true) == CSTR_EQUAL }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    if already_installed {
         let _ = shortcut();
         return Ok(false);
     }

@@ -4,6 +4,7 @@ use std::{thread, time::Duration};
 use windows::{
     Win32::{
         Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND},
+        Graphics::Gdi::{CopyEnhMetaFileW, DeleteEnhMetaFile, HENHMETAFILE},
         System::{
             DataExchange::*,
             Memory::*,
@@ -102,7 +103,21 @@ fn data(format: u32) -> Option<Vec<u8>> {
         Some(bytes)
     }
 }
-fn backup() -> Option<Vec<(u32, Vec<u8>)>> {
+/// Owns a cloned handle until it is transferred to the clipboard.
+struct EnhancedMetafile(HENHMETAFILE);
+impl Drop for EnhancedMetafile {
+    fn drop(&mut self) {
+        // SAFETY: this handle is our CopyEnhMetaFileW copy, never the clipboard's original.
+        unsafe {
+            let _ = DeleteEnhMetaFile(Some(self.0));
+        }
+    }
+}
+enum ClipboardData {
+    Global(u32, Vec<u8>),
+    Metafile(EnhancedMetafile),
+}
+fn backup() -> Option<Vec<ClipboardData>> {
     let _open = Open::acquire().ok()?;
     let mut result = Vec::new();
     let mut format = 0;
@@ -112,7 +127,21 @@ fn backup() -> Option<Vec<(u32, Vec<u8>)>> {
         if format == 0 {
             break;
         }
-        // Bitmap, palette and metafile handles aren't HGLOBAL memory blocks.
+        if format == u32::from(CF_ENHMETAFILE.0) {
+            // SAFETY: the clipboard is locked; clone its handle before it can be emptied.
+            // Windows also exposes this format for CF_METAFILEPICT-only clipboards.
+            unsafe {
+                if let Ok(handle) = GetClipboardData(format) {
+                    let copy = CopyEnhMetaFileW(HENHMETAFILE(handle.0), None);
+                    if !copy.is_invalid() {
+                        result.push(ClipboardData::Metafile(EnhancedMetafile(copy)));
+                    }
+                }
+            }
+            continue;
+        }
+        // Windows synthesizes CF_METAFILEPICT from the enhanced copy and bitmaps from DIBs.
+        // These other GDI handles aren't HGLOBAL memory blocks.
         let gdi_handle = [
             CF_BITMAP,
             CF_METAFILEPICT,
@@ -128,7 +157,7 @@ fn backup() -> Option<Vec<(u32, Vec<u8>)>> {
             continue;
         }
         if let Some(bytes) = data(format) {
-            result.push((format, bytes));
+            result.push(ClipboardData::Global(format, bytes));
         }
     }
     (!result.is_empty()).then_some(result)
@@ -188,8 +217,22 @@ pub fn paste(text: &str, target: isize) -> bool {
             unsafe {
                 let _ = EmptyClipboard();
             }
-            for (format, bytes) in backup {
-                let _ = put(format, &bytes);
+            for entry in backup {
+                match entry {
+                    ClipboardData::Global(format, bytes) => {
+                        let _ = put(format, &bytes);
+                    }
+                    ClipboardData::Metafile(copy) => {
+                        // SAFETY: on success the clipboard owns our cloned handle; on failure Drop deletes it.
+                        if unsafe {
+                            SetClipboardData(CF_ENHMETAFILE.0.into(), Some(HANDLE(copy.0.0)))
+                        }
+                        .is_ok()
+                        {
+                            std::mem::forget(copy);
+                        }
+                    }
+                }
             }
         }
     }

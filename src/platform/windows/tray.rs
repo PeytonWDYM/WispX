@@ -142,9 +142,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
             }
             if msg == CALLBACK {
                 match l.0 as u32 {
-                    WM_LBUTTONUP => (state.borrow().sink)(TrayAction::Options),
+                    WM_LBUTTONUP => {
+                        let sink = state.borrow().sink.clone();
+                        sink(TrayAction::Options);
+                    }
                     WM_RBUTTONUP | WM_CONTEXTMENU => {
-                        let _ = menu(hwnd, &state.borrow());
+                        let (title, has_transcript, sink) = {
+                            let state = state.borrow();
+                            (
+                                format!("WispX · hold {}", state.settings.hotkey),
+                                state.has_transcript,
+                                state.sink.clone(),
+                            )
+                        };
+                        // TrackPopupMenu dispatches callbacks: no RefCell borrow may outlive this snapshot.
+                        let _ = menu(hwnd, &title, has_transcript, &*sink);
                     }
                     _ => {}
                 }
@@ -154,11 +166,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         DefWindowProcW(hwnd, msg, w, l)
     }
 }
-fn menu(hwnd: HWND, state: &State) -> windows::core::Result<()> {
+fn menu(
+    hwnd: HWND,
+    title: &str,
+    has_transcript: bool,
+    sink: &dyn Fn(TrayAction),
+) -> windows::core::Result<()> {
     // SAFETY: the popup owns copied menu strings and is destroyed after TrackPopupMenu returns.
     unsafe {
         let menu = CreatePopupMenu()?;
-        let title = wide(format!("WispX · hold {}", state.settings.hotkey));
+        let title = wide(title);
         AppendMenuW(menu, MF_STRING | MF_DISABLED, 1, PCWSTR(title.as_ptr()))?;
         AppendMenuW(
             menu,
@@ -173,7 +190,7 @@ fn menu(hwnd: HWND, state: &State) -> windows::core::Result<()> {
         AppendMenuW(menu, MF_SEPARATOR, 0, None)?;
         AppendMenuW(
             menu,
-            if state.has_transcript {
+            if has_transcript {
                 MF_STRING
             } else {
                 MF_STRING | MF_GRAYED
@@ -210,7 +227,7 @@ fn menu(hwnd: HWND, state: &State) -> windows::core::Result<()> {
             7 => Some(TrayAction::Quit),
             _ => None,
         } {
-            (state.sink)(action);
+            sink(action);
         }
         Ok(())
     }

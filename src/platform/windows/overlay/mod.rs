@@ -16,7 +16,7 @@ use std::{
 use waveform::Waveform;
 use windows::{
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        Foundation::{D2DERR_RECREATE_TARGET, HWND, LPARAM, LRESULT, WPARAM},
         Graphics::Gdi::*,
         System::LibraryLoader::GetModuleHandleW,
         UI::{
@@ -46,6 +46,7 @@ struct State {
     monitor: HMONITOR,
     clock: Option<frame_clock::FrameClock>,
     rendering: bool,
+    draw_failed: bool,
     last_frame: Option<Instant>,
     transcribing_at: Instant,
     locked_at: Instant,
@@ -71,6 +72,7 @@ impl Overlay {
             monitor: HMONITOR::default(),
             clock: None,
             rendering: false,
+            draw_failed: false,
             last_frame: None,
             transcribing_at: Instant::now(),
             locked_at: Instant::now(),
@@ -255,7 +257,7 @@ impl State {
         }
     }
     fn start_frames(&mut self) {
-        if self.rendering {
+        if self.rendering || self.draw_failed {
             return;
         }
         self.rendering = true;
@@ -266,6 +268,10 @@ impl State {
             .start();
     }
     fn frame(&mut self) -> windows::core::Result<()> {
+        // A posted frame can remain queued after the clock stops on a draw failure.
+        if !self.rendering {
+            return Ok(());
+        }
         let now = Instant::now();
         let dt = self.last_frame.map_or(1.0 / 60.0, |last| {
             now.duration_since(last).as_secs_f64().min(0.05)
@@ -284,7 +290,7 @@ impl State {
             _ => (0.0, false, false),
         };
         self.wave.frame(dt, level, recording, transcribing);
-        self.renderer.draw(self.hwnd, self, now)?;
+        self.draw(now)?;
         if !recording && !transcribing && !self.motion.moving(now) {
             self.clock
                 .as_ref()
@@ -293,6 +299,37 @@ impl State {
             self.rendering = false;
         }
         Ok(())
+    }
+    fn draw(&mut self, now: Instant) -> windows::core::Result<()> {
+        if self.draw_failed {
+            return Ok(());
+        }
+        let result = (|| {
+            match self.renderer.draw(self.hwnd, self, now) {
+                Err(error) if error.code() == D2DERR_RECREATE_TARGET => {
+                    // Rebuild at the current size/DPI, including every target-dependent resource,
+                    // and retry this frame once. A persistent device failure must not spin.
+                    self.renderer = Renderer::new(
+                        self.renderer.width,
+                        self.renderer.height,
+                        self.renderer.scale,
+                    )?;
+                    self.renderer.draw(self.hwnd, self, now)
+                }
+                result => result,
+            }
+        })();
+        if result.is_err() {
+            self.clock
+                .as_ref()
+                .expect("clock installed after window creation")
+                .stop();
+            self.rendering = false;
+            // Propagate/log only the first failure; timers and queued frames cannot restart it.
+            // A successful resize installs fresh resources and permits rendering again.
+            self.draw_failed = true;
+        }
+        result
     }
     fn housekeeping(&mut self) -> windows::core::Result<()> {
         // SAFETY: only z-order flags are changed; the pill never activates.
@@ -347,6 +384,7 @@ impl State {
             let height = (120.0 * scale).round() as i32;
             if self.renderer.width != width || self.renderer.height != height {
                 self.renderer = Renderer::new(width, height, scale)?;
+                self.draw_failed = false;
             }
             let work = info.monitorInfo.rcWork;
             let x = work.left + (work.right - work.left - width) / 2;
@@ -361,7 +399,7 @@ impl State {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             )?;
             self.monitor = monitor;
-            self.renderer.draw(self.hwnd, self, Instant::now())?;
+            self.draw(Instant::now())?;
         }
         Ok(())
     }
