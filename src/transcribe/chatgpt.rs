@@ -82,7 +82,11 @@ impl ChatGpt {
                     reply.retry_after.as_deref(),
                     SystemTime::now(),
                 ),
-                Err(_) => retry::delay(retry_index, None, None, SystemTime::now()),
+                // A timeout already spent the 3-minute budget; only quick connection failures retry.
+                Err(TranscribeError::Connection) => {
+                    retry::delay(retry_index, None, None, SystemTime::now())
+                }
+                Err(_) => None,
             };
             let Some(wait) = wait else {
                 return result;
