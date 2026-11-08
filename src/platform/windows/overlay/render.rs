@@ -27,6 +27,7 @@ pub struct Renderer {
     icon: IDWriteTextFormat,
     pub width: i32,
     pub height: i32,
+    pub scale: f64,
 }
 impl Renderer {
     pub fn new(width: i32, height: i32, scale: f64) -> Result<Self> {
@@ -134,6 +135,7 @@ impl Renderer {
                     icon,
                     width,
                     height,
+                    scale,
                 })
             })();
             if result.is_err() {
