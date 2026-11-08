@@ -1,4 +1,5 @@
 pub mod clipboard;
+pub mod context;
 pub mod files;
 pub mod fonts;
 pub mod hook;

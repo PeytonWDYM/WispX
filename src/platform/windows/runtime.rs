@@ -1,6 +1,6 @@
 //! UI-thread application host. Worker results always return through Slint's event loop.
 use super::{
-    clipboard,
+    clipboard, context,
     hook::{Hook, HookMessage},
     installer,
     instance::InstanceEvent,
@@ -50,6 +50,7 @@ pub struct Runtime {
     tray: Tray,
     client: ChatGpt,
     max_timer: slint::Timer,
+    recording_context: RefCell<Option<context::Capture>>,
 }
 impl Runtime {
     pub fn start(
@@ -77,6 +78,7 @@ impl Runtime {
             tray,
             client,
             max_timer: slint::Timer::default(),
+            recording_context: RefCell::new(None),
         });
         APP.with(|slot| *slot.borrow_mut() = Some(app.clone()));
         if !background {
@@ -211,6 +213,14 @@ impl Runtime {
                     .start(&self.store.borrow().value);
                 match result {
                     Ok(Some(pill)) => {
+                        let settings = &self.store.borrow().value;
+                        if settings.cleanup
+                            && settings.cleanup_context
+                            && auth::login()
+                                .is_some_and(|login| login.mode == auth::AuthMode::ChatGpt)
+                        {
+                            *self.recording_context.borrow_mut() = context::begin();
+                        }
                         self.show(pill);
                         self.cue(Cue::Start);
                         let weak = Rc::downgrade(self);
@@ -243,6 +253,7 @@ impl Runtime {
             }
             HotkeyEvent::Release | HotkeyEvent::StopLocked => self.finish(),
             HotkeyEvent::Cancel | HotkeyEvent::CancelSilent => {
+                self.recording_context.borrow_mut().take();
                 self.max_timer.stop();
                 let pill = self.controller.borrow_mut().cancel();
                 if let Some(pill) = pill {
@@ -259,6 +270,11 @@ impl Runtime {
         // SAFETY: the current HWND is stored as an opaque value and compared only by the paste worker.
         let target = unsafe { GetForegroundWindow() }.0 as isize;
         let finished = self.controller.borrow_mut().finish();
+        let surrounding = if finished.is_some() {
+            self.recording_context.borrow_mut().take()
+        } else {
+            None
+        };
         match finished {
             None => {}
             Some(Finish::Quiet) => {
@@ -278,7 +294,7 @@ impl Runtime {
                 self.cue(Cue::Stop);
                 self.show(Pill::Transcribing);
                 let client = self.client.clone();
-                let language = self.store.borrow().value.language.clone();
+                let settings = self.store.borrow().value.clone();
                 std::thread::spawn(move || {
                     let result = (|| {
                         let audio = recorder.stop()?;
@@ -286,10 +302,20 @@ impl Runtime {
                             .transcribe(
                                 &wav::encode(&audio.pcm, 16_000),
                                 audio.duration_ms,
-                                &language,
+                                &settings.language,
                             )?
                             .trim()
                             .to_owned();
+                        let surrounding = surrounding
+                            .filter(|_| settings.cleanup_context)
+                            .and_then(context::Capture::finish)
+                            .unwrap_or_default();
+                        let text = client.cleanup(
+                            text,
+                            settings.cleanup,
+                            &surrounding,
+                            &settings.dictionary,
+                        );
                         let pasted = !text.is_empty() && clipboard::paste(&text, target);
                         Ok((text, pasted))
                     })();

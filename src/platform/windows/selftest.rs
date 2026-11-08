@@ -1,8 +1,11 @@
 //! Real endpoint exercise with a timed tour of every pill state, without hooks/tray/install.
-use super::overlay::Overlay;
+use super::{context, overlay::Overlay};
 use crate::{
     app::{MessageKind, Pill},
-    transcribe::ChatGpt,
+    transcribe::{
+        ChatGpt,
+        auth::{self, AuthMode},
+    },
 };
 use std::{
     fs,
@@ -14,10 +17,96 @@ use std::{
     time::{Duration, Instant},
 };
 thread_local! {static OVERLAY: std::cell::RefCell<Option<Rc<Overlay>>> = const {std::cell::RefCell::new(None)};}
+thread_local! {static CONTEXT_WINDOW: std::cell::RefCell<Option<ContextWindow>> = const {std::cell::RefCell::new(None)};}
+const CONTEXT_BEFORE: &str = "Before the cursor.\r\nWispX ";
+const CONTEXT_AFTER: &str = "fits here.\r\nAfter the cursor.";
+#[derive(Clone, Copy)]
+enum ContextField {
+    Multiline,
+    Password,
+}
+struct ContextWindow(windows::Win32::Foundation::HWND);
+impl Drop for ContextWindow {
+    fn drop(&mut self) {
+        // SAFETY: selftest owns this window and destroys it on its creating UI thread.
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(self.0);
+        }
+    }
+}
+impl ContextWindow {
+    fn open(field: ContextField) -> windows::core::Result<(Self, isize)> {
+        use windows::{
+            Win32::{
+                Foundation::{LPARAM, WPARAM},
+                UI::{
+                    Controls::EM_SETSEL,
+                    Input::KeyboardAndMouse::SetFocus,
+                    WindowsAndMessaging::{
+                        CreateWindowExW, ES_MULTILINE, ES_PASSWORD, SendMessageW, WINDOW_STYLE,
+                        WS_CHILD, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+                    },
+                },
+            },
+            core::{PCWSTR, w},
+        };
+        let (text, style, caret) = match field {
+            ContextField::Multiline => (
+                format!("{CONTEXT_BEFORE}{CONTEXT_AFTER}"),
+                ES_MULTILINE,
+                CONTEXT_BEFORE.encode_utf16().count(),
+            ),
+            ContextField::Password => ("fixed selftest password".into(), ES_PASSWORD, 0),
+        };
+        let text = super::files::wide(text);
+        // SAFETY: registered system classes, owned parent/child handles, and a NUL-terminated
+        // text buffer valid for creation. Messages target only our own EDIT control.
+        unsafe {
+            let window = Self(CreateWindowExW(
+                WS_EX_TOPMOST,
+                w!("STATIC"),
+                w!("WispX context selftest"),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                80,
+                80,
+                520,
+                200,
+                None,
+                None,
+                None,
+                None,
+            )?);
+            let edit = CreateWindowExW(
+                Default::default(),
+                w!("EDIT"),
+                PCWSTR(text.as_ptr()),
+                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style as u32),
+                12,
+                12,
+                470,
+                130,
+                Some(window.0),
+                None,
+                None,
+                None,
+            )?;
+            SendMessageW(
+                edit,
+                EM_SETSEL,
+                Some(WPARAM(caret)),
+                Some(LPARAM(caret as isize)),
+            );
+            SetFocus(Some(edit))?;
+            Ok((window, edit.0 as isize))
+        }
+    }
+}
 enum Step {
     Show(Pill),
     Preview,
     Snapshot(PathBuf),
+    ContextOpen(ContextField, std::sync::mpsc::SyncSender<isize>),
+    ContextClose,
 }
 fn step(step: Step) -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -31,6 +120,16 @@ fn step(step: Step) -> Result<(), Box<dyn std::error::Error>> {
                 Step::Show(pill) => overlay.show(pill).map_err(|e| e.to_string()),
                 Step::Preview => overlay.preview_recording().map_err(|e| e.to_string()),
                 Step::Snapshot(path) => overlay.snapshot(&path).map_err(|e| e.to_string()),
+                Step::ContextOpen(field, sender) => ContextWindow::open(field)
+                    .map(|(window, edit)| {
+                        CONTEXT_WINDOW.with(|slot| *slot.borrow_mut() = Some(window));
+                        let _ = sender.send(edit);
+                    })
+                    .map_err(|e| e.to_string()),
+                Step::ContextClose => {
+                    CONTEXT_WINDOW.with(|slot| slot.borrow_mut().take());
+                    Ok(())
+                }
             };
             let _ = tx.send(result);
         })
@@ -91,6 +190,67 @@ pub fn run(wav: PathBuf, out: PathBuf, language: String) -> Result<(), Box<dyn s
                 Err(error) => mark(&format!("ERROR: {error}"))?,
             }
             step(Step::Snapshot(frames.join("4-transcribing.png")))?;
+            let raw = transcription
+                .as_ref()
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            if !auth::login().is_some_and(|login| login.mode == AuthMode::ChatGpt) {
+                return Err("Cleanup E2E needs a ChatGPT Codex login".into());
+            }
+            let context = "WispX is a Windows dictation app.\n[cursor]\nThis is a repeatable test.";
+            let dictionary = ["WispX".to_owned()];
+            let cleanup_start = Instant::now();
+            let cleaned = client.cleanup(raw.clone(), true, context, &dictionary);
+            mark(&format!(
+                "CLEANUP ({} ms): raw={raw:?}; cleaned={cleaned:?}",
+                cleanup_start.elapsed().as_millis()
+            ))?;
+            if !cleaned.contains("WispX") {
+                return Err("Cleanup did not preserve the canonical WispX spelling".into());
+            }
+            // A deliberate historical recognition error proves the response wasn't a silent fallback.
+            let cleanup_start = Instant::now();
+            let corrected = client.cleanup(
+                "Wispecs is a dictation app.".into(),
+                true,
+                context,
+                &dictionary,
+            );
+            mark(&format!(
+                "DICTIONARY ({} ms): raw=\"Wispecs is a dictation app.\"; cleaned={corrected:?}",
+                cleanup_start.elapsed().as_millis()
+            ))?;
+            if !corrected.contains("WispX") {
+                return Err("Cleanup dictionary correction failed or fell back".into());
+            }
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            step(Step::ContextOpen(ContextField::Multiline, tx))?;
+            let edit = rx.recv()?;
+            let context_start = Instant::now();
+            let captured = context::begin_selftest(edit).and_then(context::Capture::finish);
+            step(Step::ContextClose)?;
+            mark(&format!(
+                "CONTEXT ({} ms): {captured:?}",
+                context_start.elapsed().as_millis()
+            ))?;
+            let expected = format!("{CONTEXT_BEFORE}[cursor]{CONTEXT_AFTER}");
+            // Native Win32 EDIT may expose only ValuePattern. In that case the
+            // documented fallback is the value's tail with the cursor marker at its end.
+            let value_fallback = format!("{CONTEXT_BEFORE}{CONTEXT_AFTER}[cursor]");
+            match captured.as_deref() {
+                Some(text) if text == expected => mark("CONTEXT: TextPattern caret matched")?,
+                Some(text) if text == value_fallback => mark(
+                    "CONTEXT: ValuePattern fallback matched; native EDIT exposes no TextPattern",
+                )?,
+                _ => return Err("Context did not match the fixed selftest EDIT text".into()),
+            }
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            step(Step::ContextOpen(ContextField::Password, tx))?;
+            let password = context::begin_selftest(rx.recv()?).and_then(context::Capture::finish);
+            step(Step::ContextClose)?;
+            if password.is_some() {
+                return Err("Password control was not excluded from context".into());
+            }
+            mark("CONTEXT: password field excluded")?;
             thread::sleep(Duration::from_millis(1200));
             step(Step::Show(Pill::Done))?;
             mark("done")?;
@@ -134,6 +294,7 @@ pub fn run(wav: PathBuf, out: PathBuf, language: String) -> Result<(), Box<dyn s
     });
     slint::run_event_loop_until_quit()?;
     OVERLAY.with(|o| o.borrow_mut().take());
+    CONTEXT_WINDOW.with(|slot| slot.borrow_mut().take());
     result.recv()?.map_err(io::Error::other)?;
     Ok(())
 }
