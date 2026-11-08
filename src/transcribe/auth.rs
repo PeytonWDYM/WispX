@@ -10,7 +10,14 @@ use std::{
 use ureq::Agent;
 static REFRESH_LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthMode {
+    ChatGpt,
+    ApiKey,
+    Unknown,
+}
 pub struct Login {
+    pub mode: AuthMode,
     pub access: String,
     pub account: String,
     refresh: Option<String>,
@@ -45,6 +52,12 @@ pub fn login() -> Option<Login> {
         })
         .unwrap_or_default();
     Some(Login {
+        mode: match root.get("auth_mode") {
+            None if tokens.is_object() => AuthMode::ChatGpt,
+            Some(Value::String(mode)) if mode == "chatgpt" => AuthMode::ChatGpt,
+            Some(Value::String(mode)) if mode == "apikey" => AuthMode::ApiKey,
+            _ => AuthMode::Unknown,
+        },
         access,
         account,
         refresh: tokens["refresh_token"].as_str().map(str::to_owned),
