@@ -1,0 +1,44 @@
+import { Palette, Switch } from "std-widgets.slint";
+export component Heading inherits Text { font-size: 28px; font-weight: 600; color: Palette.foreground; }
+export component Description inherits Text { font-size: 12px; color: Palette.alternate-foreground; wrap: word-wrap; }
+export component Card inherits Rectangle {
+    vertical-stretch: 0;
+    background: Palette.control-background;
+    border-color: Palette.border;
+    border-width: 1px;
+    border-radius: 8px;
+    VerticalLayout { padding: 20px; spacing: 8px; @children }
+}
+export component CardHeader inherits HorizontalLayout {
+    in property <string> icon-font;
+    in property <string> glyph;
+    in property <string> title;
+    in property <string> detail;
+    spacing: 16px;
+    Text { text: root.glyph; width: 20px; font-family: root.icon-font; font-size: 20px; color: Palette.foreground; vertical-alignment: center; }
+    VerticalLayout {
+        spacing: 5px;
+        Text { text: root.title; font-size: 15px; font-weight: 600; color: Palette.foreground; }
+        Description { text: root.detail; }
+    }
+}
+export component ToggleCard inherits Card {
+    in property <bool> enabled: true;
+    opacity: root.enabled ? 1 : 0.55;
+    in property <string> icon-font;
+    in property <string> glyph;
+    in property <string> title;
+    in property <string> detail;
+    in-out property <bool> checked;
+    callback toggled;
+    HorizontalLayout {
+        spacing: 16px;
+        Text { text: root.glyph; width: 20px; font-family: root.icon-font; font-size: 20px; color: Palette.foreground; vertical-alignment: center; }
+        VerticalLayout {
+            spacing: 5px;
+            Text { text: root.title; font-size: 15px; font-weight: 600; color: Palette.foreground; }
+            Description { text: root.detail; }
+        }
+        Switch { enabled: root.enabled; checked <=> root.checked; text: checked ? "On" : "Off"; toggled => { root.toggled(); } }
+    }
+}

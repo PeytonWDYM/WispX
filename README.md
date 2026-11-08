@@ -28,6 +28,12 @@ To update, download the new `WispX.exe` and run it.
 
 Left-click the tray icon to open **Options**, where you can change the shortcut, microphone, language, sounds, idle pill, and start with Windows. Ctrl + Win is the default shortcut.
 
+The **Cleanup** page turns on a second pass that fixes punctuation, drops filler words, and keeps what you meant when you correct yourself. It's on by default and needs Codex signed in with a ChatGPT account (API-key sign-ins don't count). It uses `gpt-6-luna` with the same instructions as the Codex app's own dictation cleanup. If it fails, takes longer than 8 seconds, or the transcript is over 4,000 characters, you get the original transcript instead.
+
+**Use nearby text** sends up to 2,000 characters around your cursor along with the cleanup, so punctuation and wording flow with what's already there. WispX reads it through Windows UI Automation when you start recording. It never reads password fields or its own windows, and never logs the text. Apps that don't expose their text just get no context. You can turn it off separately.
+
+Add names, file paths, and code symbols to the **Dictionary** so cleanup spells them exactly. It holds up to 200 entries, and the first 100 go with each cleanup.
+
 The tray menu also has copy last transcript, How to use, and uninstall.
 
 ## Notes
@@ -35,29 +41,54 @@ The tray menu also has copy last transcript, How to use, and uninstall.
 - WispX calls ChatGPT's `/backend-api/transcribe` endpoint. It's not a public API, so it can change or break without warning, and using it may go against OpenAI's terms.
 - ChatGPT keeps the audio for 30 days, the same as the app's own dictation.
 - WispX reads `%USERPROFILE%\.codex\auth.json`. If the token has expired, it refreshes it and writes the new one back so Codex stays signed in.
+- Uploads use mono Opus in WebM (`audio/webm`), encoded from the microphone's 16 kHz PCM at 32 kbps with 20 ms voice frames. A ten-minute recording is about 2.6 MB including the container, versus 19.2 MB as WAV. Encoding uses pure-Rust `opus-rs`, with no additional native build tools.
+- Network failures and HTTP 408/500/502/503/504 get up to three attempts, starting with 500 ms and 1 s delays. WispX respects longer `Retry-After` delays up to 10 s; token refresh has its own retry. Server error codes produce specific messages for short/oversized recordings, unsupported audio, expired/revoked tokens, rate limits, and busy models.
 - It can't type into apps running as administrator.
 
 ## Build
 
-Needs the .NET 9 SDK.
+Needs Rust 1.92 or newer. On Windows, install Visual Studio's C++ build tools and Windows SDK.
 
 ```
-dotnet publish src -c Release
+cargo build --release
 ```
 
-The exe lands in `src/bin/Release/net9.0-windows/win-x64/publish/`.
+The exe lands in `target/release/WispX.exe`. Run it with `--portable` to skip installation while developing.
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-gnu.ps1` verifies the GNU target on Windows with a downloaded MinGW GCC toolchain and the same resources used by CI.
+
+```
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --lib
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e.ps1
+```
+
+The E2E script needs `ffprobe` and `ffmpeg` on PATH. It makes a repeatable 16 kHz mono WAV with Windows speech synthesis, encodes it to Opus/WebM, transcribes it with your real Codex login, and checks the transcript. It then runs the real cleanup pass with a `WispX` dictionary entry and fixed surrounding text, checks that the old `Wispecs` recognition mistake gets corrected, and checks caret context against a small Win32 Edit control the selftest owns. It also walks the pill through its states, screenshots all five Options pages, and exports the sounds. Its files go in `artifacts/e2e/`: `selftest.log` has the transcripts, timings and upload sizes, `selftest.webm` is the exact upload, `ffprobe.json` is an independent container check, and `decoded.wav`/`ffmpeg.log` confirm it decodes cleanly. These development modes don't install, create a tray icon, register a hook, or contact an existing WispX instance, and the context test reads only its own fixed text.
+
+On Linux, `bash scripts/ci-linux.sh` verifies the portable core and cross-builds `target/x86_64-pc-windows-gnu/release/WispX.exe`. It downloads Rust and extracts MinGW GCC packages into user-owned directories, along with ALSA development packages if needed. No sudo, CMake, NASM, or Perl is needed. Linux only builds the core for now; it doesn't run a dictation app.
 
 GitHub Actions builds every push and pull request; the exe is attached to each run under **Artifacts**. Pushing a tag like `v1.0.1` builds it and publishes a release with `WispX.exe` attached.
 
 ## Layout
 
 ```
+Cargo.toml, build.rs  crate, Slint compilation, Windows resources
+assets/              original icon, DPI manifest, version information
+ui/                  portable Fluent Options layout
 src/
-  App.xaml.cs         startup, dictation flow
-  Audio/              mic recording, sounds
-  Input/              configurable hotkey hook, pasting, Win32 calls
-  Transcription/      ChatGPT transcribe + Codex login
-  UI/                 overlay pill, tray, Options pages
-  Setup/              self-install, settings
-  Assets/             icon
+  main.rs            command-line entry points and startup
+  app.rs             dictation controller
+  settings.rs        existing settings.json, atomic saves and notifications
+  hotkey.rs          shortcut model and settings serialization
+  hotkey_machine.rs  physical-key state machine and capture
+  audio/             CPAL recording, PCM, Opus/WebM uploads, WAV cue sounds
+  transcribe/        Codex login, ChatGPT transcription with retries, cleanup pass
+  ui/                Options behavior and screenshot tour
+  platform/windows/  hook, clipboard, tray, pill, install, startup, instance events
+scripts/             repeatable E2E and sudo-free Linux cross-build
 ```
+
+Options is built with [Slint](https://slint.dev), used under the [Slint Royalty-free License](https://slint.dev/license/royalty-free/2.0/). The General page credits it too.
+
+[![Made with Slint](https://raw.githubusercontent.com/slint-ui/slint/master/logo/MadeWithSlint-logo-whitebg.png)](https://slint.dev)
