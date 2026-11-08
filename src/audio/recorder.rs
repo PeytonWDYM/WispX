@@ -11,6 +11,7 @@ use std::{
         mpsc,
     },
     thread,
+    time::Duration,
 };
 
 pub const RATE: u32 = 16_000;
@@ -182,6 +183,9 @@ impl CaptureStream {
         })
     }
     fn stop(self) -> Result<Recording, RecordError> {
+        // This runs on the capture worker, never the UI thread. Keep receiving the final
+        // device buffers (and the FIR's 2 ms tail) before CPAL tears down the callback.
+        thread::sleep(Duration::from_millis(50));
         drop(self.stream);
         let mut data = self.data.lock().expect("audio callback does not panic");
         if data.pcm.is_empty() {
