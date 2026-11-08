@@ -28,11 +28,11 @@ To update, download the new `WispX.exe` and run it.
 
 Left-click the tray icon to open **Options**, where you can change the shortcut, microphone, language, sounds, idle pill, and start with Windows. Ctrl + Win is the default shortcut.
 
-The **Cleanup** page controls a second pass that fixes punctuation, removes filler words, and keeps your corrected intent. It is on by default and requires Codex signed in with a ChatGPT account; API-key sign-ins do not qualify. Cleanup uses `gpt-6-luna` through Codex's private responses endpoint. If it fails, takes more than eight seconds, returns no text, or your transcript exceeds 4,000 characters, WispX uses the original transcript.
+The **Cleanup** page turns on a second pass that fixes punctuation, drops filler words, and keeps what you meant when you correct yourself. It's on by default and needs Codex signed in with a ChatGPT account (API-key sign-ins don't count). It uses `gpt-6-luna` with the same instructions as the Codex app's own dictation cleanup. If it fails, takes longer than 8 seconds, or the transcript is over 4,000 characters, you get the original transcript instead.
 
-**Use nearby text** is also on by default. When recording starts, WispX reads up to 2,000 characters around your cursor through Windows UI Automation and sends them only with cleanup. Password fields and WispX's own windows are excluded, and captured text is never logged. Where an app exposes a whole value without a caret position, WispX uses the value's tail. Apps that do not expose text, or respond too slowly, simply provide no context. You can turn this off independently of cleanup.
+**Use nearby text** sends up to 2,000 characters around your cursor along with the cleanup, so punctuation and wording flow with what's already there. WispX reads it through Windows UI Automation when you start recording. It never reads password fields or its own windows, and never logs the text. Apps that don't expose their text just get no context. You can turn it off separately.
 
-Add canonical names, file paths, and code symbols to the **Dictionary** so cleanup can spell them exactly. WispX saves up to 200 entries and sends the first 100 with each cleanup request. Entries are trimmed and exact duplicates are ignored; casing and punctuation are preserved.
+Add names, file paths, and code symbols to the **Dictionary** so cleanup spells them exactly. It holds up to 200 entries, and the first 100 go with each cleanup.
 
 The tray menu also has copy last transcript, How to use, and uninstall.
 

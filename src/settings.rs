@@ -65,17 +65,12 @@ impl SettingsStore {
     pub fn save(&mut self) -> io::Result<()> {
         self.value.dictionary =
             crate::transcribe::cleanup::normalize_dictionary(&self.value.dictionary);
-        atomic_write(
-            &self.path,
-            &self.path.with_extension("json.tmp"),
-            &serde_json::to_vec_pretty(&self.value)?,
-        )
+        atomic_write(&self.path, &serde_json::to_vec_pretty(&self.value)?)
     }
 }
 
 /// Syncs a uniquely created sibling before atomically replacing the destination.
-/// The legacy temp-path argument is ignored to keep existing auth callers compatible.
-pub(crate) fn atomic_write(path: &Path, _tmp: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

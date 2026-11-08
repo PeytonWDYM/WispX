@@ -131,11 +131,6 @@ pub fn refresh(agent: &Agent, stale: &str) -> Option<String> {
             .ok()?
     );
     let auth_path = path().ok()?;
-    crate::settings::atomic_write(
-        &auth_path,
-        &auth_path.with_extension("json.wispx.tmp"),
-        &serde_json::to_vec_pretty(&root).ok()?,
-    )
-    .ok()?;
+    crate::settings::atomic_write(&auth_path, &serde_json::to_vec_pretty(&root).ok()?).ok()?;
     Some(access)
 }

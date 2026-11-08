@@ -34,11 +34,10 @@ pub enum Event {
 }
 pub fn post(event: Event) {
     let _ = slint::invoke_from_event_loop(move || {
-        APP.with(|app| {
-            if let Some(app) = app.borrow().as_ref() {
-                app.event(event);
-            }
-        })
+        // Clone out of the slot: nested message loops (MessageBox, menus) dispatch more events.
+        if let Some(app) = APP.with(|app| app.borrow().clone()) {
+            app.event(event);
+        }
     });
 }
 pub struct Runtime {

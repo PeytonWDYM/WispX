@@ -55,14 +55,12 @@ if ([long]$decodedStream.duration_ts * [long]$inputStream.sample_rate -ne [long]
     throw 'Decoded duration differs from the input WAV: check pre-skip and end padding.'
 }
 
-$transcriptLine = Get-Content -LiteralPath (Join-Path $OutDir 'selftest.log') | Where-Object { $_ -match 'TRANSCRIPT \(\d+ ms\): ' } | Select-Object -Last 1
-if (-not $transcriptLine) { throw 'No transcript was recorded. See selftest.log.' }
-$transcript = ($transcriptLine -split 'TRANSCRIPT \(\d+ ms\): ', 2)[1]
-# Ignore punctuation/case and whether the model spells the app name as Wisp X.
-$normalized = $transcript.ToLowerInvariant() -replace '[^a-z0-9]', ''
+# Raw transcription spells "WispX" differently run to run (Wispex, Wispecs...). The cleanup
+# pass, with "WispX" in its dictionary, must return the fixture sentence exactly.
+$cleanupLine = Get-Content -LiteralPath (Join-Path $OutDir 'selftest.log') | Where-Object { $_ -match '^\S+ \S+ \S+ CLEANUP ' } | Select-Object -Last 1
+if (-not $cleanupLine) { throw 'No cleaned transcript was recorded. See selftest.log.' }
+$cleaned = [regex]::Match($cleanupLine, 'cleaned="(.*)"$').Groups[1].Value
 $expected = 'This is a repeatable WispX dictation test. The quick brown fox jumps over the lazy dog.'
-if ($normalized -ne ($expected.ToLowerInvariant() -replace '[^a-z0-9]', '')) {
-    throw "Transcript differs from the repeatable fixture: $transcript"
-}
+if ($cleaned -cne $expected) { throw "Cleaned transcript differs from the fixture: $cleaned" }
 Get-ChildItem -LiteralPath $OutDir -Recurse -File | Select-Object FullName, Length
 if ($failed) { throw 'An E2E entry point failed. See selftest.log and the generated artifacts.' }
