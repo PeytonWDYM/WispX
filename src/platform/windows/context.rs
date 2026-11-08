@@ -6,14 +6,15 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use windows::Win32::{
     Foundation::{LPARAM, WPARAM},
     UI::{
         Controls::EM_GETSEL,
         WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SendMessageTimeoutW,
+            GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, SMTO_ABORTIFHUNG,
+            SendMessageTimeoutW,
         },
     },
 };
@@ -24,6 +25,7 @@ use windows::Win32::{
     },
     UI::Accessibility::{
         CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationValuePattern,
+        UIA_DocumentControlTypeId, UIA_GroupControlTypeId, UIA_PaneControlTypeId,
         UIA_ValuePatternId,
     },
 };
@@ -115,52 +117,82 @@ pub(super) fn capture(target: Target, mut diagnostics: Option<&mut Vec<String>>)
         let _com = Com;
         let automation: IUIAutomation =
             CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
-        let element = match target {
-            // A fixed owned Edit tests the channel and native caret path even if
-            // another application takes focus during a simulated provider delay.
-            Target::SelftestEdit(edit) => {
-                automation.ElementFromHandle(HWND(edit as *mut _)).ok()?
-            }
+        let chromium = match target {
             Target::Foreground(hwnd) => {
-                if GetForegroundWindow().0 as isize != hwnd {
-                    return None;
-                }
-                let element = automation.GetFocusedElement().ok()?;
-                if GetForegroundWindow().0 as isize != hwnd {
-                    return None;
-                }
-                element
+                let mut class = [0u16; 128];
+                let len = GetClassNameW(HWND(hwnd as *mut _), &mut class) as usize;
+                String::from_utf16_lossy(&class[..len]).starts_with("Chrome_")
             }
+            Target::SelftestEdit(_) => false,
         };
-        if let Some(log) = diagnostics.as_mut() {
-            log.push(format!(
-                "focused: name={:?}, class={:?}, control={:?}, pid={:?}",
-                element.CurrentName(),
-                element.CurrentClassName(),
-                element.CurrentControlType(),
-                element.CurrentProcessId()
-            ));
-        }
-        if element.CurrentIsPassword().ok()?.as_bool() {
-            return None;
-        }
-        let own = element.CurrentProcessId().ok()? as u32 == std::process::id();
-        match target {
-            Target::SelftestEdit(edit)
-                if !own || element.CurrentNativeWindowHandle().ok()?.0 as isize != edit =>
-            {
+        let started = Instant::now();
+        loop {
+            let element = match target {
+                // A fixed owned Edit tests the channel and native caret path even if
+                // another application takes focus during a simulated provider delay.
+                Target::SelftestEdit(edit) => {
+                    automation.ElementFromHandle(HWND(edit as *mut _)).ok()?
+                }
+                Target::Foreground(hwnd) => {
+                    if GetForegroundWindow().0 as isize != hwnd {
+                        return None;
+                    }
+                    let element = automation.GetFocusedElement().ok()?;
+                    if GetForegroundWindow().0 as isize != hwnd {
+                        return None;
+                    }
+                    element
+                }
+            };
+            if let Some(log) = diagnostics.as_mut() {
+                log.push(format!(
+                    "focused: name={:?}, class={:?}, control={:?}, pid={:?}",
+                    element.CurrentName(),
+                    element.CurrentClassName(),
+                    element.CurrentControlType(),
+                    element.CurrentProcessId()
+                ));
+            }
+            if element.CurrentIsPassword().ok()?.as_bool() {
                 return None;
             }
-            Target::Foreground(_) if own => return None,
-            _ => {}
-        }
-        if let Some(text) = text::read(&element) {
-            if let Some(log) = diagnostics.as_mut() {
-                log.push("path: TextPattern".into());
+            let own = element.CurrentProcessId().ok()? as u32 == std::process::id();
+            match target {
+                Target::SelftestEdit(edit)
+                    if !own || element.CurrentNativeWindowHandle().ok()?.0 as isize != edit =>
+                {
+                    return None;
+                }
+                Target::Foreground(_) if own => return None,
+                _ => {}
             }
-            return Some(text);
+            if let Some(text) = text::read(&element) {
+                if let Some(log) = diagnostics.as_mut() {
+                    log.push("path: TextPattern".into());
+                }
+                return Some(text);
+            }
+            if let Some(text) = value_context(&element, &mut diagnostics) {
+                return Some(text);
+            }
+            // A cold Chromium tree can initially expose only a container. Give its
+            // asynchronous tree two seconds on this worker, with focus pinned to the
+            // original window. Capture::finish never waits for these retries, and BUSY
+            // still permits only one worker if a provider hangs inside a COM call.
+            let container = [
+                UIA_PaneControlTypeId,
+                UIA_DocumentControlTypeId,
+                UIA_GroupControlTypeId,
+            ]
+            .contains(&element.CurrentControlType().ok()?);
+            if !chromium || !container || started.elapsed() >= Duration::from_secs(2) {
+                return None;
+            }
+            if let Some(log) = diagnostics.as_mut() {
+                log.push("pending Chromium container: retry".into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
-        value_context(&element, &mut diagnostics)
     }
 }
 

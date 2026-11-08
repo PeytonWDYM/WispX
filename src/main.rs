@@ -38,6 +38,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         sounds::export(&dir)?;
         return Ok(());
     }
+    if let Some(request) = value("--context-probe") {
+        return wispx::platform::windows::context_probe::run(&request);
+    }
+    if let Some(out) = value("--cleanup-probe") {
+        return wispx::platform::windows::context_probe::cleanup(&out);
+    }
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name("software".into())

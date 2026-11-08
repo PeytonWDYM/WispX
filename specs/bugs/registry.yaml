@@ -1,0 +1,12 @@
+bugs:
+  - bug_id: BUG-2026-11-08-nearby-text
+    date: '2026-11-08'
+    severity: medium
+    priority: high
+    scope: cleanup
+    summary: Nearby text did not continue existing sentences in browser inputs
+    file: specs/bugs/BUG-2026-11-08-nearby-text.md
+    status: fixed
+    risk_level: low
+    approach: Keep completed capture, clamp field ranges, define cursor marker, join words
+    commit_message: 'fix(cleanup): continue dictation at the known caret'
