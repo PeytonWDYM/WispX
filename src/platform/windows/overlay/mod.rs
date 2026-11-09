@@ -1,19 +1,19 @@
 //! Non-activating layered pill; DWM frames are requested only for active animation.
 mod frame_clock;
-mod motion;
 mod render;
-mod waveform;
 use crate::{
     app::{MessageKind, Pill},
     audio::recorder::Levels,
+    overlay::{
+        motion::{Ease, Motion},
+        waveform::Waveform,
+    },
 };
-use motion::{Ease, Motion};
 use render::Renderer;
 use std::{
     cell::RefCell,
     time::{Duration, Instant},
 };
-use waveform::Waveform;
 use windows::{
     Win32::{
         Foundation::{D2DERR_RECREATE_TARGET, HWND, LPARAM, LRESULT, WPARAM},

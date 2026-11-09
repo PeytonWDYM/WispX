@@ -9,7 +9,7 @@ use super::{
     tray::{Tray, TrayAction},
 };
 use crate::{
-    app::{Controller, DictationError, Finish, MessageKind, Pill},
+    app::{Controller, Delivery, DictationError, Finish, MessageKind, Pill},
     audio::{opus, sounds::Cue},
     hotkey_machine::HotkeyEvent,
     settings::{Settings, SettingsStore},
@@ -30,7 +30,7 @@ pub enum Event {
     Hook(HookMessage),
     Instance(InstanceEvent),
     Tray(TrayAction),
-    Complete(Result<(String, bool), DictationError>),
+    Complete(Result<(String, Delivery), DictationError>),
 }
 pub fn post(event: Event) {
     let _ = slint::invoke_from_event_loop(move || {
@@ -317,8 +317,12 @@ impl Runtime {
                             &settings.dictionary,
                         );
                         let text = crate::transcribe::cleanup::join_context(text, &surrounding);
-                        let pasted = !text.is_empty() && clipboard::paste(&text, target);
-                        Ok((text, pasted))
+                        let delivery = if !text.is_empty() && clipboard::paste(&text, target) {
+                            Delivery::Pasted
+                        } else {
+                            Delivery::FocusChanged
+                        };
+                        Ok((text, delivery))
                     })();
                     post(Event::Complete(result));
                 });

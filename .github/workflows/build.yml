@@ -27,19 +27,28 @@ jobs:
 
       # checkout wipes ignored files, so the toolchains and build cache live outside the
       # workspace and survive between runs on the self-hosted runner.
-      - name: Verify core and cross-build Windows
+      - name: Verify, build Linux and cross-build Windows
         shell: bash
         run: |
           export WISPX_TOOLS_DIR="$HOME/.cache/wispx/tools"
           export CARGO_TARGET_DIR="$HOME/.cache/wispx/target"
           bash scripts/ci-linux.sh
+          rm -rf dist
           mkdir -p dist
           cp "$CARGO_TARGET_DIR/x86_64-pc-windows-gnu/release/WispX.exe" dist/
+          # A tarball keeps the executable bit, which artifact zips drop.
+          tar -czf dist/WispX-linux-x86_64.tar.gz -C "$CARGO_TARGET_DIR/release" WispX
 
       - uses: actions/upload-artifact@v4
         with:
           name: WispX
           path: dist/WispX.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WispX-linux-x86_64
+          path: dist/WispX-linux-x86_64.tar.gz
           if-no-files-found: error
 
   release:
@@ -53,10 +62,15 @@ jobs:
         with:
           name: WispX
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: WispX-linux-x86_64
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" WispX.exe \
+          gh release create "$GITHUB_REF_NAME" WispX.exe WispX-linux-x86_64.tar.gz \
             --repo "$GITHUB_REPOSITORY" --title "WispX $GITHUB_REF_NAME" --generate-notes \
-          || gh release upload "$GITHUB_REF_NAME" WispX.exe --repo "$GITHUB_REPOSITORY" --clobber
+          || gh release upload "$GITHUB_REF_NAME" WispX.exe WispX-linux-x86_64.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --clobber

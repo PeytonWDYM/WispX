@@ -52,6 +52,18 @@ pub enum Finish {
     TooQuiet,
     Upload(Recorder),
 }
+/// How a finished transcript reached the user.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Delivery {
+    /// Pasted into the window that was focused when dictation ended.
+    Pasted,
+    /// Focus moved while transcribing, so the text was only copied.
+    FocusChanged,
+    /// This desktop offers no verified way to paste, so the text was only copied.
+    Copied,
+    /// Neither pasted nor copied (no clipboard); the tray can retry the copy.
+    Failed,
+}
 impl Controller {
     pub fn recording(&self) -> bool {
         self.active.is_some()
@@ -90,19 +102,26 @@ impl Controller {
         self.in_flight += 1;
         Some(Finish::Upload(active.recorder))
     }
-    pub fn complete(&mut self, result: Result<(String, bool), DictationError>) -> Option<Pill> {
+    pub fn complete(&mut self, result: Result<(String, Delivery), DictationError>) -> Option<Pill> {
         self.in_flight -= 1;
         let pill = match result {
-            Ok((text, pasted)) if !text.trim().is_empty() => {
+            Ok((text, delivery)) if !text.trim().is_empty() => {
                 self.last_transcript = Some(text);
-                if pasted {
-                    Pill::Done
-                } else {
-                    Pill::message(
+                match delivery {
+                    Delivery::Pasted => Pill::Done,
+                    Delivery::FocusChanged => Pill::message(
                         "Copied. You switched windows, so press Ctrl + V",
                         MessageKind::Info,
                         3.5,
-                    )
+                    ),
+                    Delivery::Copied => {
+                        Pill::message("Copied. Press Ctrl + V to paste", MessageKind::Info, 3.5)
+                    }
+                    Delivery::Failed => Pill::message(
+                        "Couldn't paste or copy. Try Copy last transcript",
+                        MessageKind::Error,
+                        4.0,
+                    ),
                 }
             }
             Ok(_) => Pill::message("Didn't catch that", MessageKind::Warn, 2.6),
@@ -129,4 +148,56 @@ pub enum DictationError {
     Transcribe(#[from] TranscribeError),
     #[error("Transcription failed")]
     Recording(#[from] RecordError),
+}
+
+#[cfg(test)]
+mod tests {
+    // Failure modes: a completion while recording steals the pill; an empty
+    // transcript replaces the last one; copy-only delivery claims a paste; a
+    // failed copy claims the text is on the clipboard or loses the transcript.
+    use super::*;
+
+    fn completed(delivery: Delivery) -> (Controller, Option<Pill>) {
+        let mut controller = Controller {
+            in_flight: 1,
+            ..Controller::default()
+        };
+        let pill = controller.complete(Ok(("hello".into(), delivery)));
+        (controller, pill)
+    }
+
+    #[test]
+    fn delivery_selects_the_pill_and_keeps_the_transcript() {
+        let (controller, pill) = completed(Delivery::Pasted);
+        assert!(matches!(pill, Some(Pill::Done)));
+        assert_eq!(controller.last_transcript.as_deref(), Some("hello"));
+        assert_eq!(controller.in_flight, 0);
+        for (delivery, expected) in [
+            (Delivery::FocusChanged, "You switched windows"),
+            (Delivery::Copied, "Press Ctrl + V to paste"),
+            (Delivery::Failed, "Couldn't paste or copy"),
+        ] {
+            let (controller, pill) = completed(delivery);
+            assert_eq!(controller.last_transcript.as_deref(), Some("hello"));
+            match pill {
+                Some(Pill::Message { text, .. }) => {
+                    assert!(text.contains(expected), "{text}");
+                    assert_eq!(delivery == Delivery::Failed, !text.starts_with("Copied"));
+                }
+                _ => panic!("{delivery:?} must explain the copy"),
+            }
+        }
+    }
+
+    #[test]
+    fn empty_transcripts_keep_the_previous_one() {
+        let mut controller = Controller {
+            in_flight: 1,
+            last_transcript: Some("before".into()),
+            ..Controller::default()
+        };
+        let pill = controller.complete(Ok(("  ".into(), Delivery::Pasted)));
+        assert!(matches!(pill, Some(Pill::Message { .. })));
+        assert_eq!(controller.last_transcript.as_deref(), Some("before"));
+    }
 }

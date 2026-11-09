@@ -45,6 +45,24 @@ const LANGUAGES: &[(&str, &str)] = &[
     ("Chinese", "zh"),
 ];
 
+#[cfg(windows)]
+const DEFAULT_MICROPHONE: &str = "Windows default";
+#[cfg(not(windows))]
+const DEFAULT_MICROPHONE: &str = "System default";
+#[cfg(windows)]
+const MICROPHONE_ERROR: &str = "Couldn't open this microphone. Check its Windows settings.";
+#[cfg(not(windows))]
+const MICROPHONE_ERROR: &str =
+    "Couldn't open this microphone. Check your sound settings and microphone permissions.";
+
+/// A shortcut the desktop binds on WispX's behalf, as on Wayland.
+pub struct DesktopShortcut {
+    /// Key names of the hold-to-talk shortcut, or a single explanatory entry.
+    pub keys: Vec<String>,
+    /// How to go hands-free, cancel and change the keys on this desktop.
+    pub hint: String,
+}
+
 /// Host callbacks keep this UI usable without a Windows platform layer.
 pub trait OptionsHost {
     /// Releases the closed window so the next open gets fresh pages and devices.
@@ -55,6 +73,12 @@ pub trait OptionsHost {
     fn startup(&self) -> bool;
     fn set_startup(&self, enabled: bool) -> Result<(), String>;
     fn settings_changed(&self, settings: &Settings);
+    /// Present when the desktop, not WispX, owns the global shortcut.
+    fn desktop_shortcut(&self) -> Option<DesktopShortcut> {
+        None
+    }
+    /// Opens the desktop's own shortcut settings for a desktop-owned shortcut.
+    fn configure_shortcut(&self) {}
 }
 pub struct Options {
     pub window: OptionsWindow,
@@ -87,12 +111,15 @@ impl Options {
             window.set_text_font(text.into());
             window.set_icon_font(icons.into());
         }
+        #[cfg(target_os = "linux")]
+        crate::platform::linux::desktop::style_options(&window);
         window.set_tour(tour);
         {
             let settings = &store.borrow().value;
             window.set_sounds(settings.sounds);
             window.set_cleanup(settings.cleanup);
-            window.set_cleanup_context(settings.cleanup_context);
+            // Unsupported hosts show it off without changing the saved choice.
+            window.set_cleanup_context(settings.cleanup_context && window.get_context_supported());
             window.set_dictionary(strings(settings.dictionary.clone()));
             window.set_dictionary_limit(MAX_DICTIONARY_ENTRIES as i32);
             window.set_version(env!("CARGO_PKG_VERSION").into());
@@ -109,7 +136,7 @@ impl Options {
                 });
             window.set_microphone(selected.map_or(0, |i| i as i32 + 1));
             window.set_microphones(strings(
-                std::iter::once("Windows default".into()).chain(devices),
+                std::iter::once(DEFAULT_MICROPHONE.into()).chain(devices),
             ));
             window.set_languages(strings(LANGUAGES.iter().map(|&(n, _)| n.to_owned())));
             window.set_language(
@@ -271,17 +298,24 @@ impl Options {
             .into(),
         );
     }
-    fn show_keys(&self, animate: bool) {
+    /// Shows the current shortcut; the runtime calls this when the desktop rebinds it.
+    pub fn show_keys(&self, animate: bool) {
         self.window.set_keycaps_ready(!animate);
-        self.window.set_keys(strings(
-            self.store
-                .borrow()
-                .value
-                .hotkey
-                .to_string()
-                .split(" + ")
-                .map(str::to_owned),
-        ));
+        if let Some(shortcut) = self.host.as_ref().and_then(|h| h.desktop_shortcut()) {
+            self.window.set_shortcut_capture(false);
+            self.window.set_shortcut_hint(shortcut.hint.into());
+            self.window.set_keys(strings(shortcut.keys));
+        } else {
+            self.window.set_keys(strings(
+                self.store
+                    .borrow()
+                    .value
+                    .hotkey
+                    .to_string()
+                    .split(" + ")
+                    .map(str::to_owned),
+            ));
+        }
         if animate {
             let weak = self.window.as_weak();
             Timer::single_shot(Duration::from_millis(16), move || {
@@ -351,7 +385,11 @@ impl Options {
                 });
             }
             Action::ChangeShortcut => {
-                if self.window.get_capturing() {
+                if !self.window.get_shortcut_capture() {
+                    if let Some(host) = &self.host {
+                        host.configure_shortcut();
+                    }
+                } else if self.window.get_capturing() {
                     self.cancel_capture();
                 } else if let Some(host) = &self.host {
                     self.window.set_error("".into());
@@ -446,9 +484,7 @@ impl Options {
             }
             Err(_) => {
                 self.stop_test();
-                self.window.set_test_error(
-                    "Couldn't open this microphone. Check its Windows settings.".into(),
-                );
+                self.window.set_test_error(MICROPHONE_ERROR.into());
             }
         }
     }

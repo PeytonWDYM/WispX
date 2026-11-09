@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Native Linux verification and a Windows GNU build, with only user-owned tooling.
+# Native Linux verification and build, then a Windows GNU build, with only user-owned tooling.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [[ -f "$HOME/.cargo/env" ]]; then source "$HOME/.cargo/env"; fi
@@ -42,7 +42,13 @@ fi
 
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --lib
+cargo test --locked
+# The Linux app links only ALSA; X11, Wayland, fontconfig and xkbcommon load at run time.
+cargo build --locked --release
+linux_exe="${CARGO_TARGET_DIR:-target}/release/WispX"
+"$linux_exe" --version
+# Paints every pill state offscreen, so the binary's fonts and renderer run without a display.
+"$linux_exe" --pill-tour "${CARGO_TARGET_DIR:-target}/pill-tour"
 
 toolchain="$tools/mingw"
 if [[ ! -x "$toolchain/usr/bin/x86_64-w64-mingw32-gcc-posix" ]]; then

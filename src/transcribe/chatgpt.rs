@@ -11,6 +11,11 @@ use ureq::{
     tls::{RootCerts, TlsConfig},
 };
 
+#[cfg(windows)]
+const USER_AGENT: &str = concat!("WispX/", env!("CARGO_PKG_VERSION"), " (Windows)");
+#[cfg(not(windows))]
+const USER_AGENT: &str = concat!("WispX/", env!("CARGO_PKG_VERSION"), " (Linux)");
+
 #[derive(Clone)]
 pub struct ChatGpt {
     pub(crate) agent: Agent,
@@ -22,7 +27,7 @@ impl Default for ChatGpt {
                 .timeout_global(Some(Duration::from_secs(180)))
                 .max_idle_age(Duration::from_secs(600))
                 .http_status_as_error(false)
-                .user_agent(concat!("WispX/", env!("CARGO_PKG_VERSION"), " (Windows)"))
+                .user_agent(USER_AGENT)
                 .tls_config(
                     TlsConfig::builder()
                         .root_certs(RootCerts::PlatformVerifier)

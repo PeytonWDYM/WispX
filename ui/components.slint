@@ -1,4 +1,20 @@
 import { Palette, Switch } from "std-widgets.slint";
+// Segoe Fluent Icons code points by default; hosts without that font substitute symbols.
+export global Glyphs {
+    in-out property <string> account: "\u{e77b}";
+    in-out property <string> shortcut: "\u{e765}";
+    in-out property <string> audio: "\u{e720}";
+    in-out property <string> cleanup: "\u{e8fb}";
+    in-out property <string> general: "\u{e713}";
+    in-out property <string> signed-in: "\u{e73e}";
+    in-out property <string> signed-out: "\u{e7ba}";
+    in-out property <string> language: "\u{e774}";
+    in-out property <string> sounds: "\u{e767}";
+    in-out property <string> idle-pill: "\u{e890}";
+    in-out property <string> startup: "\u{e7e8}";
+    in-out property <string> context: "\u{e8a5}";
+    in-out property <string> dictionary: "\u{e82d}";
+}
 export component Heading inherits Text { font-size: 28px; font-weight: 600; color: Palette.foreground; }
 export component Description inherits Text { font-size: 12px; color: Palette.alternate-foreground; wrap: word-wrap; }
 export component Card inherits Rectangle {

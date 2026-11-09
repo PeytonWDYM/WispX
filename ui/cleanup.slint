@@ -1,9 +1,10 @@
 import { Button, LineEdit, Palette } from "std-widgets.slint";
-import { Card, CardHeader, Description, ToggleCard } from "components.slint";
+import { Card, CardHeader, Description, Glyphs, ToggleCard } from "components.slint";
 
 export component CleanupPage inherits VerticalLayout {
     in property <string> icon-font;
     in property <bool> available;
+    in property <bool> context-supported: true;
     in-out property <bool> cleanup;
     in-out property <bool> context;
     in property <[string]> dictionary;
@@ -19,22 +20,24 @@ export component CleanupPage inherits VerticalLayout {
         color: #b88922;
     }
     ToggleCard {
-        icon-font: root.icon-font; glyph: "\u{e8fb}";
+        icon-font: root.icon-font; glyph: Glyphs.cleanup;
         title: "Clean up transcripts";
         detail: "Fix punctuation, drop filler words, and keep what you meant when you correct yourself.";
         checked <=> root.cleanup; enabled: root.available;
         toggled => { root.cleanup-changed(); }
     }
     ToggleCard {
-        icon-font: root.icon-font; glyph: "\u{e8a5}";
+        icon-font: root.icon-font; glyph: Glyphs.context;
         title: "Use nearby text";
-        detail: "Send up to 2,000 characters around your cursor so punctuation and wording flow. Never from password fields.";
-        checked <=> root.context; enabled: root.available && root.cleanup;
+        detail: root.context-supported
+            ? "Send up to 2,000 characters around your cursor so punctuation and wording flow. Never from password fields."
+            : "Not available on this desktop yet. Cleanup works without nearby text.";
+        checked <=> root.context; enabled: root.available && root.cleanup && root.context-supported;
         toggled => { root.context-changed(); }
     }
     Card {
         CardHeader {
-            icon-font: root.icon-font; glyph: "\u{e82d}";
+            icon-font: root.icon-font; glyph: Glyphs.dictionary;
             title: "Dictionary";
             detail: "Names, file paths, and code symbols to spell exactly.";
         }
