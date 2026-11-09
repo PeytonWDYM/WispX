@@ -1,5 +1,6 @@
 import { Button, ComboBox, Palette, ScrollView } from "std-widgets.slint";
-import { Card, CardHeader, Heading, Description, ToggleCard } from "components.slint";
+import { Card, CardHeader, Heading, Description, Glyphs, ToggleCard } from "components.slint";
+export { Glyphs }
 import { CleanupPage } from "cleanup.slint";
 export enum Action { check-account, change-shortcut, reset-shortcut, test-microphone, cleanup, cleanup-context, sounds, idle-pill, startup, close, page-changed }
 export component OptionsWindow inherits Window {
@@ -39,6 +40,11 @@ export component OptionsWindow inherits Window {
     in-out property <bool> idle-pill;
     in-out property <bool> startup;
     in property <bool> cleanup-available;
+    in property <bool> context-supported: true;
+    in property <string> startup-title: "Start with Windows";
+    // Hosts whose desktop owns global shortcuts show its binding instead of capturing one.
+    in property <bool> shortcut-capture: true;
+    in property <string> shortcut-hint: "Hold to talk · add Space for hands-free · Esc cancels";
     in-out property <bool> cleanup;
     in-out property <bool> cleanup-context;
     in property <[string]> dictionary;
@@ -72,7 +78,7 @@ export component OptionsWindow inherits Window {
                         height: 46px; border-radius: 6px;
                         background: root.page == index || hit.has-hover ? Palette.alternate-background : transparent;
                         Text { x: 40px; text: name; color: Palette.foreground; vertical-alignment: center; }
-                        Text { x: 16px; text: ["\u{e77b}", "\u{e765}", "\u{e720}", "\u{e8fb}", "\u{e713}"][index]; font-family: root.icon-font; color: Palette.foreground; vertical-alignment: center; }
+                        Text { x: 16px; text: [Glyphs.account, Glyphs.shortcut, Glyphs.audio, Glyphs.cleanup, Glyphs.general][index]; font-family: root.icon-font; color: Palette.foreground; vertical-alignment: center; }
                         hit := TouchArea { clicked => { root.page = index; } }
                     }
                     Rectangle { vertical-stretch: 1; }
@@ -97,7 +103,7 @@ export component OptionsWindow inherits Window {
                         HorizontalLayout {
                             spacing: 16px;
                             Text {
-                                text: root.signed-in ? "\u{e73e}" : "\u{e7ba}"; width: 20px; font-family: root.icon-font; font-size: 20px; color: root.signed-in ? #42a464 : #b88922; vertical-alignment: center;
+                                text: root.signed-in ? Glyphs.signed-in : Glyphs.signed-out; width: 20px; font-family: root.icon-font; font-size: 20px; color: root.signed-in ? #42a464 : #b88922; vertical-alignment: center;
                                 opacity: root.account-ready ? 1 : 0;
                                 transform-scale-x: root.account-ready ? 100% : 85%; transform-scale-y: root.account-ready ? 100% : 85%;
                                 transform-origin: { x:self.width/2,y:self.height/2 };
@@ -141,10 +147,10 @@ export component OptionsWindow inherits Window {
                                 Rectangle { horizontal-stretch: 1; }
                                 Button { text: root.capturing ? "Cancel" : "Change…"; primary: !root.capturing; min-width: 110px; height: 32px; horizontal-stretch: 0; clicked => { root.action(Action.change-shortcut); } }
                             }
-                            Description { text: "Hold to talk · add Space for hands-free · Esc cancels"; }
+                            Description { text: root.shortcut-hint; }
                         }
                         if root.error != "": Description { text: root.error; color: #b88922; }
-                        HorizontalLayout {
+                        if root.shortcut-capture: HorizontalLayout {
                             Button { text: "Reset to Ctrl + Win"; horizontal-stretch: 0; clicked => { root.action(Action.reset-shortcut); } }
                             Rectangle { horizontal-stretch: 1; }
                         }
@@ -153,7 +159,7 @@ export component OptionsWindow inherits Window {
                         vertical-stretch: 0;
                         spacing: 12px;
                         Card {
-                            CardHeader { icon-font: root.icon-font; glyph: "\u{e720}"; title: "Microphone"; detail: "Choose the microphone used for dictation."; }
+                            CardHeader { icon-font: root.icon-font; glyph: Glyphs.audio; title: "Microphone"; detail: "Choose the microphone used for dictation."; }
                             ComboBox { model: root.microphones; current-index <=> root.microphone; selected(_) => { root.microphone-selected(self.current-index); } }
                             HorizontalLayout {
                                 spacing: 16px;
@@ -166,13 +172,14 @@ export component OptionsWindow inherits Window {
                             if root.test-error != "": Description { text: root.test-error; }
                         }
                         Card {
-                            CardHeader { icon-font: root.icon-font; glyph: "\u{e774}"; title: "Language"; detail: "Auto-detect, or give transcription a language hint."; }
+                            CardHeader { icon-font: root.icon-font; glyph: Glyphs.language; title: "Language"; detail: "Auto-detect, or give transcription a language hint."; }
                             ComboBox { model: root.languages; current-index <=> root.language; selected(_) => { root.language-selected(self.current-index); } }
                         }
                     }
                     if root.page == 3: CleanupPage {
                         icon-font: root.icon-font;
                         available: root.cleanup-available;
+                        context-supported: root.context-supported;
                         cleanup <=> root.cleanup;
                         context <=> root.cleanup-context;
                         dictionary: root.dictionary;
@@ -185,9 +192,9 @@ export component OptionsWindow inherits Window {
                     if root.page == 4: VerticalLayout {
                         vertical-stretch: 0;
                         spacing: 12px;
-                        ToggleCard { icon-font: root.icon-font; glyph: "\u{e767}"; title: "Play sounds"; detail: "Audio cues when dictation starts and stops."; checked <=> root.sounds; toggled => { root.action(Action.sounds); } }
-                        ToggleCard { icon-font: root.icon-font; glyph: "\u{e890}"; title: "Show idle pill"; detail: "Keep a small indicator above the taskbar."; checked <=> root.idle-pill; toggled => { root.action(Action.idle-pill); } }
-                        ToggleCard { icon-font: root.icon-font; glyph: "\u{e7e8}"; title: "Start with Windows"; detail: "Have WispX ready when you sign in."; checked <=> root.startup; toggled => { root.action(Action.startup); } }
+                        ToggleCard { icon-font: root.icon-font; glyph: Glyphs.sounds; title: "Play sounds"; detail: "Audio cues when dictation starts and stops."; checked <=> root.sounds; toggled => { root.action(Action.sounds); } }
+                        ToggleCard { icon-font: root.icon-font; glyph: Glyphs.idle-pill; title: "Show idle pill"; detail: "Keep a small indicator above the taskbar."; checked <=> root.idle-pill; toggled => { root.action(Action.idle-pill); } }
+                        ToggleCard { icon-font: root.icon-font; glyph: Glyphs.startup; title: root.startup-title; detail: "Have WispX ready when you sign in."; checked <=> root.startup; toggled => { root.action(Action.startup); } }
                         Description { text: "WispX " + root.version; }
                         Description { text: "Built with Slint · slint.dev · Slint Royalty-free License"; }
                     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Native Linux verification and a Windows GNU build, with only user-owned tooling.
+# Native Linux verification and build, then a Windows GNU build, with only user-owned tooling.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [[ -f "$HOME/.cargo/env" ]]; then source "$HOME/.cargo/env"; fi
@@ -15,14 +15,20 @@ mkdir -p "$tools"
 tools="$(cd "$tools" && pwd)"
 
 # CPAL's Linux backend links ALSA. Extract development packages locally when the
-# runner has no development headers/pkg-config. This never invokes sudo or dpkg -i.
+# runner has no development headers/pkg-config, reusing pkg-config when installed.
+# This never invokes sudo or dpkg -i.
 if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists alsa; then
     packages="$tools/debs"
     sysroot="$tools/sysroot"
     mkdir -p "$packages" "$sysroot"
     (
         cd "$packages"
-        apt-get download libasound2-dev pkgconf-bin libpkgconf3
+        apt-get download libasound2-dev
+        if ! command -v pkg-config >/dev/null 2>&1; then
+            # Debian/Ubuntu releases use different libpkgconf package names.
+            pkgconf_library="$(apt-cache depends pkgconf-bin | awk '/Depends: libpkgconf[0-9]/ { print $2 }')"
+            apt-get download pkgconf-bin "$pkgconf_library"
+        fi
         if apt-cache show libasound2t64 >/dev/null 2>&1; then
             apt-get download libasound2t64
         else
@@ -30,11 +36,14 @@ if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists alsa; then
         fi
         for package in ./*.deb; do dpkg-deb -x "$package" "$sysroot"; done
     )
+    # Only override pkg-config when we downloaded its replacement above.
+    if ! command -v pkg-config >/dev/null 2>&1; then
+        export PKG_CONFIG="$sysroot/usr/bin/pkgconf"
+    fi
     export PATH="$sysroot/usr/bin:$PATH"
     # Empty components search the working directory. Besides loading unintended
     # libraries, GCC can mistake a local specs/ directory for its specs file.
     export LD_LIBRARY_PATH="$sysroot/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    export PKG_CONFIG="$sysroot/usr/bin/pkgconf"
     export PKG_CONFIG_PATH="$sysroot/usr/lib/x86_64-linux-gnu/pkgconfig"
     export PKG_CONFIG_SYSROOT_DIR="$sysroot"
     export LIBRARY_PATH="$sysroot/usr/lib/x86_64-linux-gnu${LIBRARY_PATH:+:$LIBRARY_PATH}"
@@ -42,7 +51,13 @@ fi
 
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --lib
+cargo test --locked
+# The Linux app links only ALSA; X11, Wayland, fontconfig and xkbcommon load at run time.
+cargo build --locked --release
+linux_exe="${CARGO_TARGET_DIR:-target}/release/WispX"
+"$linux_exe" --version
+# Paints every pill state offscreen, so the binary's fonts and renderer run without a display.
+"$linux_exe" --pill-tour "${CARGO_TARGET_DIR:-target}/pill-tour"
 
 toolchain="$tools/mingw"
 if [[ ! -x "$toolchain/usr/bin/x86_64-w64-mingw32-gcc-posix" ]]; then

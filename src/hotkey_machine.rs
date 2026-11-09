@@ -60,6 +60,20 @@ impl HotkeyMachine {
     pub fn force_idle(&mut self) {
         self.phase = Phase::Idle;
     }
+    pub fn hotkey(&self) -> &Hotkey {
+        &self.hotkey
+    }
+    /// Holding or hands-free, when Esc belongs to WispX.
+    pub fn dictating(&self) -> bool {
+        self.phase != Phase::Idle
+    }
+    /// Space would switch the held dictation to hands-free.
+    pub fn lock_armed(&self) -> bool {
+        self.combo_held && self.phase == Phase::Holding
+    }
+    pub fn capturing(&self) -> bool {
+        self.capture.is_some()
+    }
     pub fn cancel_capture(&mut self) {
         self.capture = None;
     }
@@ -260,6 +274,23 @@ mod tests {
         assert!(up(&mut m, SPACE).swallow);
         assert_eq!(up(&mut m, LWIN).event, None);
         assert_eq!(down(&mut m, LWIN).event, Some(HotkeyEvent::StopLocked));
+    }
+
+    #[test]
+    fn ownership_queries_follow_the_phase() {
+        let mut m = HotkeyMachine::default();
+        assert!(!m.dictating() && !m.lock_armed());
+        down(&mut m, LCTRL);
+        down(&mut m, LWIN);
+        assert!(m.dictating() && m.lock_armed());
+        down(&mut m, SPACE);
+        assert!(m.dictating() && !m.lock_armed());
+        down(&mut m, ESCAPE);
+        assert!(!m.dictating());
+        m.begin_capture();
+        assert!(m.capturing());
+        m.cancel_capture();
+        assert!(!m.capturing());
     }
 
     #[test]
