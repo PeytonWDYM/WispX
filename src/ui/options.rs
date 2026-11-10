@@ -1,4 +1,4 @@
-use super::{Action, OptionsWindow, chart};
+use super::{Action, OptionsWindow, blur, chart};
 use crate::{
     audio::recorder::{self, Recorder},
     hotkey::Hotkey,
@@ -98,6 +98,20 @@ fn strings(values: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
             .collect::<Vec<_>>(),
     ))
     .into()
+}
+/// Rebuilds device-resolution masks on account refresh and monitor scale changes.
+fn refresh_email_frames(window: &OptionsWindow) {
+    let scale = window.window().scale_factor();
+    let frames = blur::text(
+        window.get_email().as_str(),
+        window.get_text_font().as_str(),
+        15.0,
+        scale,
+    );
+    let (images, pad) = frames.map_or_else(|| (Vec::new(), 0.0), |f| (f.images, f.pad));
+    window.set_email_frames(Rc::new(VecModel::from(images)).into());
+    window.set_email_pad(pad);
+    window.set_email_scale(scale);
 }
 impl Options {
     pub fn new(
@@ -249,6 +263,15 @@ impl Options {
             }
             if let Some(ui) = weak.upgrade() {
                 match event {
+                    WindowEvent::ScaleFactorChanged { .. } => {
+                        // Read Slint's effective scale after its backend consumes the event.
+                        let weak = Rc::downgrade(&ui);
+                        Timer::single_shot(Duration::ZERO, move || {
+                            if let Some(ui) = weak.upgrade() {
+                                refresh_email_frames(&ui.window);
+                            }
+                        });
+                    }
                     WindowEvent::Focused(false) => ui.cleanup(),
                     WindowEvent::ModifiersChanged(m) => modifiers.set(m.state()),
                     WindowEvent::KeyboardInput { event, .. }
@@ -276,6 +299,8 @@ impl Options {
             let weak = self.window.as_weak();
             Timer::single_shot(Duration::from_millis(16), move || {
                 if let Some(window) = weak.upgrade() {
+                    // Winit realizes a newly shown window on the event loop, acquiring its DPI.
+                    refresh_email_frames(&window);
                     window.set_entered(true);
                     window.set_page_ready(true);
                 }
@@ -317,11 +342,9 @@ impl Options {
             auth::login().is_some_and(|login| login.mode == auth::AuthMode::ChatGpt),
         );
         let email = auth::email();
-        self.window.set_signed_in(email.is_some());
-        self.window.set_status(email.as_ref().map_or_else(
-            || "Not signed in".into(),
-            |s| format!("Signed in as {s}").into(),
-        ));
+        self.window
+            .set_email(email.as_deref().unwrap_or_default().into());
+        refresh_email_frames(&self.window);
         self.window.set_account_detail(
             if email.is_some() {
                 "Using your ChatGPT login from the Codex app"

@@ -24,24 +24,29 @@ pub fn start(ui: Rc<Options>, dir: PathBuf) -> io::Result<Timer> {
         _ => {}
     }
     fs::create_dir_all(&dir)?;
-    let page = Cell::new(0);
+    // Each step is the file name and page of one capture; the Account page is shot blurred,
+    // then again after the email is revealed.
+    const STEPS: [(&str, i32); 7] = [
+        ("1-account", 0),
+        ("1-account-revealed", 0),
+        ("2-shortcut", 1),
+        ("3-audio", 2),
+        ("4-cleanup", 3),
+        ("5-stats", 4),
+        ("6-general", 5),
+    ];
+    let step = Cell::new(0);
     let original_size = Cell::new(ui.window.window().size());
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_millis(600), move || {
-        let i = page.get();
+        let i = step.get();
         let result = ui
             .window
             .window()
             .take_snapshot()
             .map_err(io::Error::other)
             .and_then(|pixels| {
-                let path = dir.join(format!(
-                    "{}-{}.png",
-                    i + 1,
-                    [
-                        "account", "shortcut", "audio", "cleanup", "stats", "general"
-                    ][i]
-                ));
+                let path = dir.join(format!("{}.png", STEPS[i].0));
                 let mut encoder =
                     png::Encoder::new(File::create(path)?, pixels.width(), pixels.height());
                 encoder.set_color(png::ColorType::Rgba);
@@ -56,21 +61,23 @@ pub fn start(ui: Rc<Options>, dir: PathBuf) -> io::Result<Timer> {
             let _ = slint::quit_event_loop();
             return;
         }
-        if i == 5 {
+        let Some(&(name, page)) = STEPS.get(i + 1) else {
             let _ = slint::quit_event_loop();
-        } else {
-            page.set(i + 1);
-            ui.window.set_page(i as i32 + 1);
-            // Capture the full Stats page, including its reset card below the chart.
-            if i == 3 {
-                original_size.set(ui.window.window().size());
-                ui.window.window().set_size(slint::LogicalSize::new(
-                    original_size.get().width as f32 / ui.window.window().scale_factor(),
-                    760.0,
-                ));
-            } else if i == 4 {
-                ui.window.window().set_size(original_size.get());
-            }
+            return;
+        };
+        step.set(i + 1);
+        ui.window.set_email_revealed(name == "1-account-revealed");
+        ui.window.set_page(page);
+        // Capture the full Stats page, including its reset card below the chart.
+        let window = ui.window.window();
+        if name == "5-stats" {
+            original_size.set(window.size());
+            window.set_size(slint::LogicalSize::new(
+                original_size.get().width as f32 / window.scale_factor(),
+                760.0,
+            ));
+        } else if name == "6-general" {
+            window.set_size(original_size.get());
         }
     });
     Ok(timer)
