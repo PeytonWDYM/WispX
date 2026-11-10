@@ -1,8 +1,9 @@
 import { Button, ComboBox, Palette, ScrollView } from "std-widgets.slint";
 import { Card, CardHeader, Heading, Description, Glyphs, ToggleCard } from "components.slint";
-export { Glyphs }
+export { Glyphs, Palette }
 import { CleanupPage } from "cleanup.slint";
-export enum Action { check-account, change-shortcut, reset-shortcut, test-microphone, cleanup, cleanup-context, sounds, idle-pill, startup, close, page-changed }
+import { StatsPage } from "stats.slint";
+export enum Action { check-account, change-shortcut, reset-shortcut, test-microphone, cleanup, cleanup-context, sounds, idle-pill, startup, close, page-changed, reset-stats }
 export component OptionsWindow inherits Window {
     in property <string> version;
     title: "WispX Options";
@@ -49,6 +50,14 @@ export component OptionsWindow inherits Window {
     in-out property <bool> cleanup-context;
     in property <[string]> dictionary;
     in property <int> dictionary-limit;
+    in property <[string]> stats-totals;
+    in property <bool> has-stats;
+    in property <string> stats-line;
+    in property <string> stats-area;
+    in property <string> stats-maximum;
+    in property <string> stats-first-date;
+    in property <float> stats-last-y;
+    in property <string> stats-error;
     callback action(Action);
     callback microphone-selected(int);
     callback language-selected(int);
@@ -74,11 +83,11 @@ export component OptionsWindow inherits Window {
                 Rectangle { x: parent.width - 1px; width: 1px; background: Palette.border; }
                 VerticalLayout {
                     padding: 12px; padding-top: 24px; spacing: 4px;
-                    for name[index] in ["Account", "Shortcut", "Audio", "Cleanup", "General"]: Rectangle {
+                    for name[index] in ["Account", "Shortcut", "Audio", "Cleanup", "Stats", "General"]: Rectangle {
                         height: 46px; border-radius: 6px;
                         background: root.page == index || hit.has-hover ? Palette.alternate-background : transparent;
                         Text { x: 40px; text: name; color: Palette.foreground; vertical-alignment: center; }
-                        Text { x: 16px; text: [Glyphs.account, Glyphs.shortcut, Glyphs.audio, Glyphs.cleanup, Glyphs.general][index]; font-family: root.icon-font; color: Palette.foreground; vertical-alignment: center; }
+                        Text { x: 16px; text: [Glyphs.account, Glyphs.shortcut, Glyphs.audio, Glyphs.cleanup, Glyphs.stats, Glyphs.general][index]; font-family: root.icon-font; color: Palette.foreground; vertical-alignment: center; }
                         hit := TouchArea { clicked => { root.page = index; } }
                     }
                     Rectangle { vertical-stretch: 1; }
@@ -97,7 +106,7 @@ export component OptionsWindow inherits Window {
                 content-width: self.width;
                 VerticalLayout {
                     padding: 28px; padding-top: 24px; spacing: 12px;
-                    Heading { text: ["Account", "Shortcut", "Audio", "Cleanup", "General"][root.page]; }
+                    Heading { text: ["Account", "Shortcut", "Audio", "Cleanup", "Stats", "General"][root.page]; }
                     Rectangle { height: 12px; }
                     if root.page == 0: Card {
                         HorizontalLayout {
@@ -189,7 +198,15 @@ export component OptionsWindow inherits Window {
                         add-entry(entry) => { root.dictionary-add(entry); }
                         remove-entry(index) => { root.dictionary-remove(index); }
                     }
-                    if root.page == 4: VerticalLayout {
+                    if root.page == 4: StatsPage {
+                        icon-font: root.icon-font;
+                        totals: root.stats-totals; has-stats: root.has-stats;
+                        line: root.stats-line; area: root.stats-area;
+                        maximum: root.stats-maximum; first-date: root.stats-first-date;
+                        last-y: root.stats-last-y; error: root.stats-error;
+                        reset => { root.action(Action.reset-stats); }
+                    }
+                    if root.page == 5: VerticalLayout {
                         vertical-stretch: 0;
                         spacing: 12px;
                         ToggleCard { icon-font: root.icon-font; glyph: Glyphs.sounds; title: "Play sounds"; detail: "Audio cues when dictation starts and stops."; checked <=> root.sounds; toggled => { root.action(Action.sounds); } }

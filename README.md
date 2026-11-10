@@ -32,6 +32,10 @@ Linux needs ALSA's `libasound.so.2`. On Wayland, global shortcuts need `xdg-desk
 
 Click the tray icon to open **Options**. From there you can change the shortcut, microphone, language, sounds, and startup behavior.
 
+The **Stats** page shows word counts and dictation speed, with a chart of the last 30 days. It saves only counts and spoken time in `stats.json` next to your settings, never the text; you can reset it anytime.
+
+<p align="center"><img src="docs/images/options-stats.png" alt="Options window showing the Stats page" width="640"></p>
+
 <p align="center"><img src="docs/images/options-shortcut.png" alt="Options window showing the Shortcut page" width="640"></p>
 
 ### Linux shortcuts and pasting

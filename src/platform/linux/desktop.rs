@@ -120,6 +120,8 @@ pub fn style_options(window: &OptionsWindow) {
     glyphs.set_shortcut("⌨".into());
     glyphs.set_audio("♪".into());
     glyphs.set_cleanup("✎".into());
+    glyphs.set_stats("↗".into());
+    glyphs.set_reset("↺".into());
     glyphs.set_general("⚙".into());
     glyphs.set_signed_in("✓".into());
     glyphs.set_signed_out("⚠".into());

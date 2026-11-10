@@ -124,7 +124,7 @@ if [[ -n "$x11pid" ]]; then
 fi
 
 timeout 60 env -i "${base[@]}" "$exe" --options-tour "$out/options" >"$root/tour.log" 2>&1 || true
-check "Options tour saved five pages" test "$(ls "$out/options" 2>/dev/null | wc -l)" -eq 5
+check "Options tour saved six pages" test "$(ls "$out/options" 2>/dev/null | wc -l)" -eq 6
 "$exe" --pill-tour "$out/pill" >/dev/null || true
 check "pill tour painted every state" test "$(ls "$out/pill" 2>/dev/null | wc -l)" -eq 14
 

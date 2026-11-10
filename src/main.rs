@@ -36,6 +36,7 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 fn linux() -> Result<i32, Box<dyn std::error::Error>> {
+    wispx::stats::init_local_offset();
     use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
     use wispx::{
         audio::sounds,
@@ -113,7 +114,12 @@ fn linux() -> Result<i32, Box<dyn std::error::Error>> {
         .renderer_name("software".into())
         .select()?;
     if let Some(dir) = value("--options-tour")? {
-        let ui = Options::new(Rc::new(RefCell::new(SettingsStore::load()?)), None, true)?;
+        let ui = Options::new(
+            Rc::new(RefCell::new(SettingsStore::load()?)),
+            Rc::new(RefCell::new(wispx::stats::StatsStore::load()?)),
+            None,
+            true,
+        )?;
         ui.show()?;
         let _timer = tour::start(ui, dir)?;
         slint::run_event_loop_until_quit()?;
@@ -149,6 +155,7 @@ fn main() {
 
 #[cfg(windows)]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    wispx::stats::init_local_offset();
     use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::Arc};
     use wispx::{
         audio::sounds,
@@ -183,7 +190,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .renderer_name("software".into())
         .select()?;
     if let Some(dir) = value("--options-tour") {
-        let ui = Options::new(Rc::new(RefCell::new(SettingsStore::load()?)), None, true)?;
+        let ui = Options::new(
+            Rc::new(RefCell::new(SettingsStore::load()?)),
+            Rc::new(RefCell::new(wispx::stats::StatsStore::load()?)),
+            None,
+            true,
+        )?;
         ui.show()?;
         let _timer = tour::start(ui, dir)?;
         slint::run_event_loop_until_quit()?;
