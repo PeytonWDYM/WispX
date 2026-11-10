@@ -1,8 +1,9 @@
-use super::{Action, OptionsWindow};
+use super::{Action, OptionsWindow, chart};
 use crate::{
     audio::recorder::{self, Recorder},
     hotkey::Hotkey,
     settings::{Settings, SettingsStore},
+    stats::{self, StatsStore},
     transcribe::{
         auth,
         cleanup::{MAX_DICTIONARY_ENTRIES, normalize_dictionary},
@@ -83,6 +84,7 @@ pub trait OptionsHost {
 pub struct Options {
     pub window: OptionsWindow,
     store: Rc<RefCell<SettingsStore>>,
+    stats: Rc<RefCell<StatsStore>>,
     host: Option<Rc<dyn OptionsHost>>,
     test: RefCell<Option<Recorder>>,
     timer: Timer,
@@ -100,6 +102,7 @@ fn strings(values: impl IntoIterator<Item = String>) -> ModelRc<SharedString> {
 impl Options {
     pub fn new(
         store: Rc<RefCell<SettingsStore>>,
+        stats: Rc<RefCell<StatsStore>>,
         host: Option<Rc<dyn OptionsHost>>,
         tour: bool,
     ) -> Result<Rc<Self>, slint::PlatformError> {
@@ -149,12 +152,14 @@ impl Options {
         let ui = Rc::new(Self {
             window,
             store: store.clone(),
+            stats,
             host,
             test: RefCell::new(None),
             timer: Timer::default(),
             capture_generation: Cell::new(None),
         });
         ui.refresh_account();
+        ui.refresh_stats();
         ui.show_keys(false);
         let weak = Rc::downgrade(&ui);
         ui.window.on_action(move |action| {
@@ -251,8 +256,8 @@ impl Options {
                             && event.physical_key == PhysicalKey::Code(KeyCode::Tab)
                             && modifiers.get().control_key() =>
                     {
-                        let step = if modifiers.get().shift_key() { 4 } else { 1 };
-                        ui.window.set_page((ui.window.get_page() + step) % 5);
+                        let step = if modifiers.get().shift_key() { 5 } else { 1 };
+                        ui.window.set_page((ui.window.get_page() + step) % 6);
                         return EventResult::PreventDefault;
                     }
                     _ => {}
@@ -264,6 +269,7 @@ impl Options {
     }
     pub fn show(&self) -> Result<(), slint::PlatformError> {
         self.refresh_account();
+        self.refresh_stats();
         let opening = !self.window.window().is_visible();
         self.window.show()?;
         if opening {
@@ -278,6 +284,33 @@ impl Options {
         self.window.window().set_minimized(false);
         self.window.window().with_winit_window(|w| w.focus_window());
         Ok(())
+    }
+    /// Updates totals and chart geometry after dictation, reset, or opening Options.
+    pub fn refresh_stats(&self) {
+        let today = stats::today();
+        let summary = self.stats.borrow().value.summary(today);
+        self.window.set_stats_totals(strings(
+            [
+                summary.total_words,
+                summary.total_dictations,
+                summary.average_wpm,
+                summary.words_today,
+            ]
+            .map(chart::number),
+        ));
+        self.window.set_has_stats(summary.total_dictations > 0);
+        let chart = chart::chart(&summary.daily);
+        self.window.set_stats_line(chart.line.into());
+        self.window.set_stats_area(chart.area.into());
+        self.window
+            .set_stats_maximum(chart::number(chart.top).into());
+        self.window.set_stats_last_y(chart.last_y);
+        let first = today - time::Duration::days(29);
+        let month = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ][first.month() as usize - 1];
+        self.window
+            .set_stats_first_date(format!("{month} {}", first.day()).into());
     }
     fn refresh_account(&self) {
         self.window.set_cleanup_available(
@@ -405,6 +438,18 @@ impl Options {
                 self.show_keys(true);
             }
             Action::TestMicrophone => self.toggle_test(),
+            Action::ResetStats => {
+                let result = self.stats.borrow_mut().reset();
+                match result {
+                    Ok(()) => {
+                        self.window.set_stats_error("".into());
+                        self.refresh_stats();
+                    }
+                    Err(error) => self
+                        .window
+                        .set_stats_error(format!("Couldn't reset statistics: {error}").into()),
+                }
+            }
             Action::Cleanup => {
                 self.store.borrow_mut().value.cleanup = self.window.get_cleanup();
                 self.save();
@@ -432,6 +477,7 @@ impl Options {
             }
             Action::PageChanged => {
                 self.cleanup();
+                self.refresh_stats();
                 self.window.set_page_ready(false);
                 let weak = self.window.as_weak();
                 Timer::single_shot(Duration::from_millis(16), move || {

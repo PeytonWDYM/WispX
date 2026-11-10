@@ -11,10 +11,11 @@ use super::{
     tray::{Tray, TrayAction},
 };
 use crate::{
-    app::{Controller, Delivery, DictationError, Finish, MessageKind, Pill},
+    app::{Controller, Delivery, Dictation, DictationError, Finish, MessageKind, Pill},
     audio::{opus, sounds::Cue},
     hotkey_machine::HotkeyEvent,
     settings::{Settings, SettingsStore},
+    stats::StatsStore,
     transcribe::{ChatGpt, auth},
     ui::{DesktopShortcut, Options, OptionsHost},
 };
@@ -22,13 +23,14 @@ use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
     sync::Arc,
+    time::Duration,
 };
 thread_local! { static APP: RefCell<Option<Rc<Runtime>>> = const { RefCell::new(None) }; }
 pub enum Event {
     Hook(HookMessage),
     Instance(InstanceEvent),
     Tray(TrayAction),
-    Complete(Result<(String, Delivery), DictationError>),
+    Complete(Result<Dictation, DictationError>),
     /// Copy last transcript failed; the reason for the pill.
     CopyFailed(String),
 }
@@ -42,6 +44,7 @@ pub fn post(event: Event) {
 pub struct Runtime {
     controller: RefCell<Controller>,
     store: Rc<RefCell<SettingsStore>>,
+    stats: Rc<RefCell<StatsStore>>,
     options: RefCell<Option<Rc<Options>>>,
     hotkeys: Hotkeys,
     overlay: Overlay,
@@ -81,6 +84,7 @@ impl Runtime {
         let app = Rc::new(Self {
             controller: RefCell::new(Controller::default()),
             store: Rc::new(RefCell::new(store)),
+            stats: Rc::new(RefCell::new(StatsStore::load()?)),
             options: RefCell::new(None),
             hotkeys,
             overlay,
@@ -246,6 +250,17 @@ impl Runtime {
                 self.tray.balloon("WispX", &self.usage(), 7000);
             }
             Event::Complete(result) => {
+                if let Ok(dictation) = &result
+                    && let Err(error) = self
+                        .stats
+                        .borrow_mut()
+                        .record(&dictation.text, dictation.spoken)
+                {
+                    eprintln!("Statistics: {error}");
+                }
+                if let Some(ui) = self.options.borrow().as_ref() {
+                    ui.refresh_stats();
+                }
                 let pill = self.controller.borrow_mut().complete(result);
                 self.refresh_tray();
                 if let Some(pill) = pill {
@@ -257,7 +272,7 @@ impl Runtime {
     fn open_options(self: &Rc<Self>) {
         if self.options.borrow().is_none() {
             let host = Rc::new(Host(Rc::downgrade(self)));
-            match Options::new(self.store.clone(), Some(host), false) {
+            match Options::new(self.store.clone(), self.stats.clone(), Some(host), false) {
                 Ok(ui) => *self.options.borrow_mut() = Some(ui),
                 Err(error) => {
                     eprintln!("Options: {error}");
@@ -380,7 +395,11 @@ impl Runtime {
                         } else {
                             paster.deliver(&text, target.as_ref())
                         };
-                        Ok((text, delivery))
+                        Ok(Dictation {
+                            text,
+                            delivery,
+                            spoken: Duration::from_millis(audio.duration_ms),
+                        })
                     })();
                     post(Event::Complete(result));
                 });

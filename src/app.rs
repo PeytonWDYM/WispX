@@ -64,6 +64,12 @@ pub enum Delivery {
     /// Neither pasted nor copied (no clipboard); the tray can retry the copy.
     Failed,
 }
+/// Finished text, its delivery outcome, and the recording's spoken duration.
+pub struct Dictation {
+    pub text: String,
+    pub delivery: Delivery,
+    pub spoken: Duration,
+}
 impl Controller {
     pub fn recording(&self) -> bool {
         self.active.is_some()
@@ -102,10 +108,10 @@ impl Controller {
         self.in_flight += 1;
         Some(Finish::Upload(active.recorder))
     }
-    pub fn complete(&mut self, result: Result<(String, Delivery), DictationError>) -> Option<Pill> {
+    pub fn complete(&mut self, result: Result<Dictation, DictationError>) -> Option<Pill> {
         self.in_flight -= 1;
         let pill = match result {
-            Ok((text, delivery)) if !text.trim().is_empty() => {
+            Ok(Dictation { text, delivery, .. }) if !text.trim().is_empty() => {
                 self.last_transcript = Some(text);
                 match delivery {
                     Delivery::Pasted => Pill::Done,
@@ -162,7 +168,11 @@ mod tests {
             in_flight: 1,
             ..Controller::default()
         };
-        let pill = controller.complete(Ok(("hello".into(), delivery)));
+        let pill = controller.complete(Ok(Dictation {
+            text: "hello".into(),
+            delivery,
+            spoken: Duration::from_secs(1),
+        }));
         (controller, pill)
     }
 
@@ -196,7 +206,11 @@ mod tests {
             last_transcript: Some("before".into()),
             ..Controller::default()
         };
-        let pill = controller.complete(Ok(("  ".into(), Delivery::Pasted)));
+        let pill = controller.complete(Ok(Dictation {
+            text: "  ".into(),
+            delivery: Delivery::Pasted,
+            spoken: Duration::from_secs(1),
+        }));
         assert!(matches!(pill, Some(Pill::Message { .. })));
         assert_eq!(controller.last_transcript.as_deref(), Some("before"));
     }

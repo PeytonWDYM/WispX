@@ -6,5 +6,6 @@ pub mod hotkey_machine;
 pub mod overlay;
 pub mod platform;
 pub mod settings;
+pub mod stats;
 pub mod transcribe;
 pub mod ui;

@@ -23,7 +23,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-18", "unstable-winit-030"] }
 thiserror = "2"
 ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "gzip", "json"] }
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "local-offset"] }
 
 [target.'cfg(windows)'.dependencies]
 hound = "3.5"

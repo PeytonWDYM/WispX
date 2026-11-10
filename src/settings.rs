@@ -43,17 +43,7 @@ pub struct SettingsStore {
 }
 impl SettingsStore {
     pub fn load() -> io::Result<Self> {
-        let base = std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "Application data directory is unavailable",
-                )
-            })?;
-        Ok(Self::at(base.join("WispX/settings.json")))
+        Ok(Self::at(config_dir()?.join("settings.json")))
     }
     pub fn at(path: PathBuf) -> Self {
         let value = fs::read(&path)
@@ -67,6 +57,21 @@ impl SettingsStore {
             crate::transcribe::cleanup::normalize_dictionary(&self.value.dictionary);
         atomic_write(&self.path, &serde_json::to_vec_pretty(&self.value)?)
     }
+}
+
+/// Shared WispX directory for settings and aggregate statistics.
+pub(crate) fn config_dir() -> io::Result<PathBuf> {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .map(|base| base.join("WispX"))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "Application data directory is unavailable",
+            )
+        })
 }
 
 /// Syncs a uniquely created sibling before atomically replacing the destination.

@@ -1,0 +1,120 @@
+import { Button, Palette } from "std-widgets.slint";
+import { Card, CardHeader, Description, Glyphs } from "components.slint";
+
+component StatTile inherits Card {
+    in property <string> value;
+    in property <string> label;
+    height: 114px;
+    Text {
+        text: root.value;
+        font-size: 26px; font-weight: 600;
+        color: Palette.foreground;
+        overflow: elide;
+    }
+    Description { text: root.label; vertical-stretch: 1; }
+}
+
+export component StatsPage inherits VerticalLayout {
+    in property <string> icon-font;
+    in property <[string]> totals;
+    in property <bool> has-stats;
+    in property <string> line;
+    in property <string> area;
+    in property <string> maximum;
+    in property <string> first-date;
+    in property <float> last-y;
+    in property <string> error;
+    private property <color> surface: Palette.control-background;
+    private property <color> chart-background: root.surface.with-alpha(1).mix(Palette.background, root.surface.alpha / 255);
+    // Recreated whenever the page is shown, so leaving the page cancels a pending reset.
+    private property <bool> confirming: false;
+    callback reset;
+    vertical-stretch: 0;
+    spacing: 12px;
+
+    HorizontalLayout {
+        spacing: 12px;
+        for title[index] in ["Words", "Dictations", "Avg. WPM", "Words today"]: StatTile {
+            min-width: 0px; preferred-width: 0px; horizontal-stretch: 1;
+            value: root.totals[index];
+            label: title;
+        }
+    }
+    Card {
+        background: root.chart-background;
+        CardHeader {
+            icon-font: root.icon-font; glyph: Glyphs.stats;
+            title: "Words over time"; detail: "Last 30 days";
+        }
+        if !root.has-stats: Description {
+            height: 210px;
+            text: "Dictate something and your stats will show up here.";
+            horizontal-alignment: center; vertical-alignment: center;
+        }
+        if root.has-stats: VerticalLayout {
+            spacing: 8px;
+            Description { text: root.maximum; }
+            plot := Rectangle {
+                height: 180px;
+                // Slint fits the geometry before stroking, so this remains 2 logical pixels.
+                Path {
+                    x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                    viewbox-width: 300; viewbox-height: 100; fit: fill;
+                    commands: root.area;
+                    fill: Palette.accent-background.with-alpha(0.35);
+                }
+                // The software renderer flattens Path gradients. Fade the area into
+                // the opaque card surface instead, then draw the grid and line above it.
+                Rectangle {
+                    background: @linear-gradient(180deg, root.chart-background.with-alpha(0) 0%, root.chart-background 100%);
+                }
+                for i in 3: Rectangle {
+                    x: 1px; y: 1px + (parent.height - 2px) * i / 2;
+                    width: parent.width - 2px; height: 1px;
+                    background: Palette.border;
+                }
+                Path {
+                    x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                    viewbox-width: 300; viewbox-height: 100; fit: fill;
+                    commands: root.line;
+                    fill: transparent;
+                    stroke: Palette.accent-background; stroke-width: 2px;
+                    stroke-line-cap: round; stroke-line-join: round;
+                }
+                Rectangle {
+                    x: parent.width - 5px;
+                    y: 1px + (parent.height - 2px) * root.last-y / 100 - 4px;
+                    width: 8px; height: 8px; border-radius: 4px;
+                    background: Palette.accent-background;
+                    border-color: Palette.control-background; border-width: 2px;
+                }
+            }
+            HorizontalLayout {
+                Description { text: root.first-date; }
+                Description { text: "Today"; horizontal-alignment: right; }
+            }
+        }
+    }
+    Card {
+        CardHeader {
+            icon-font: root.icon-font; glyph: Glyphs.reset;
+            title: "Reset statistics";
+            detail: "Clears your word counts and speeds. Transcripts are never stored.";
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            if root.confirming: Description { text: "This can't be undone."; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            if !root.confirming: Button {
+                text: "Reset…"; enabled: root.has-stats;
+                clicked => { root.confirming = true; }
+            }
+            if root.confirming: Button { text: "Cancel"; clicked => { root.confirming = false; } }
+            if root.confirming: Button {
+                text: "Reset"; primary: true;
+                clicked => { root.confirming = false; root.reset(); }
+            }
+        }
+        if root.error != "": Description { text: root.error; }
+    }
+}
