@@ -11,6 +11,7 @@ name = "WispX"
 path = "src/main.rs"
 
 [dependencies]
+ab_glyph = "0.2"
 base64 = "0.22"
 cpal = "0.16"
 httpdate = "1"
@@ -43,7 +44,6 @@ windows = { version = "0.62", features = [
 # Desktop integration for Linux. Versions match those Slint's winit backend already
 # pulls in, so X11, Wayland, D-Bus and clipboard code is shared rather than duplicated.
 [target.'cfg(target_os = "linux")'.dependencies]
-ab_glyph = "0.2"
 arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
 async-io = "2"
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "global_shortcuts", "remote_desktop", "screencast"] }

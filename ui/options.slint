@@ -3,6 +3,7 @@ import { Card, CardHeader, Heading, Description, Glyphs, ToggleCard } from "comp
 export { Glyphs, Palette }
 import { CleanupPage } from "cleanup.slint";
 import { StatsPage } from "stats.slint";
+import { SecretText } from "secret.slint";
 export enum Action { check-account, change-shortcut, reset-shortcut, test-microphone, cleanup, cleanup-context, sounds, idle-pill, startup, close, page-changed, reset-stats }
 export component OptionsWindow inherits Window {
     in property <string> version;
@@ -24,9 +25,13 @@ export component OptionsWindow inherits Window {
     in-out property <bool> account-ready: true;
     in property <bool> tour: false;
     always-on-top: root.tour;
-    in property <string> status;
+    // Empty when signed out.
+    in property <string> email;
+    in property <[image]> email-frames;
+    in property <length> email-pad;
+    in property <float> email-scale: 1;
+    in-out property <bool> email-revealed: false;
     in property <string> account-detail;
-    in property <bool> signed-in;
     in property <[string]> keys;
     in-out property <bool> capturing;
     in property <string> error;
@@ -112,7 +117,7 @@ export component OptionsWindow inherits Window {
                         HorizontalLayout {
                             spacing: 16px;
                             Text {
-                                text: root.signed-in ? Glyphs.signed-in : Glyphs.signed-out; width: 20px; font-family: root.icon-font; font-size: 20px; color: root.signed-in ? #42a464 : #b88922; vertical-alignment: center;
+                                text: root.email != "" ? Glyphs.signed-in : Glyphs.signed-out; width: 20px; font-family: root.icon-font; font-size: 20px; color: root.email != "" ? #42a464 : #b88922; vertical-alignment: center;
                                 opacity: root.account-ready ? 1 : 0;
                                 transform-scale-x: root.account-ready ? 100% : 85%; transform-scale-y: root.account-ready ? 100% : 85%;
                                 transform-origin: { x:self.width/2,y:self.height/2 };
@@ -120,7 +125,13 @@ export component OptionsWindow inherits Window {
                             }
                             VerticalLayout {
                                 spacing: 5px;
-                                Text { text: root.status; font-size: 15px; font-weight: 600; color: Palette.foreground; wrap: word-wrap; }
+                                if root.email == "": Text { text: "Not signed in"; font-size: 15px; font-weight: 600; color: Palette.foreground; }
+                                if root.email != "": HorizontalLayout {
+                                    alignment: start;
+                                    spacing: 5px;
+                                    Text { text: "Signed in as"; font-size: 15px; font-weight: 600; color: Palette.foreground; }
+                                    SecretText { text: root.email; frames: root.email-frames; pad: root.email-pad; image-scale: root.email-scale; font-size: 15px; font-weight: 600; color: Palette.foreground; revealed <=> root.email-revealed; }
+                                }
                                 Description { text: root.account-detail; }
                             }
                             Button { text: "Check again"; clicked => { root.action(Action.check-account); } }
