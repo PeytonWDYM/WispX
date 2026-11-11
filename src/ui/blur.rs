@@ -1,4 +1,9 @@
 //! Cached, transparent glyph masks for the email's Gaussian blur animation.
+//!
+//! The masks are drawn from random decoy letters, never the secret itself, so no amount of
+//! deblurring or font-matching a screenshot can recover the email. Only its length leaks.
+use std::hash::{BuildHasher, RandomState};
+
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont, VariableFont, point};
 use fontique::{
     Attributes, Collection, CollectionOptions, FontStyle, FontWeight, FontWidth, GenericFamily,
@@ -7,7 +12,9 @@ use fontique::{
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 const LEVELS: usize = 5;
-const MAX_SIGMA: f32 = 3.0;
+// Even the lightest frame is too soft to read; the crisp native text takes over below it.
+const MIN_SIGMA: f32 = 1.5;
+const MAX_SIGMA: f32 = 4.5;
 
 pub struct Frames {
     pub images: Vec<Image>,
@@ -47,11 +54,21 @@ fn load_font(family: &str) -> Option<FontVec> {
     found
 }
 
-/// Rasterizes once at device resolution; every level shares the same origin and padding.
-pub fn text(text: &str, family: &str, font_size: f32, scale: f32) -> Option<Frames> {
-    if text.is_empty() {
+/// Random lowercase letters, one per character of the secret.
+fn decoy(secret: &str) -> String {
+    let seed = RandomState::new();
+    (0..secret.chars().count())
+        .map(|i| char::from(b'a' + (seed.hash_one(i) % 26) as u8))
+        .collect()
+}
+
+/// Rasterizes a decoy of `secret` once at device resolution; every level shares the same
+/// origin and padding.
+pub fn text(secret: &str, family: &str, font_size: f32, scale: f32) -> Option<Frames> {
+    if secret.is_empty() {
         return None;
     }
+    let text = decoy(secret);
     let font = load_font(family)?;
     // Slint sizes an em; ab_glyph sizes ascent minus descent instead.
     let pixels = font_size * scale;
@@ -97,13 +114,8 @@ pub fn text(text: &str, family: &str, font_size: f32, scale: f32) -> Option<Fram
     let images = (0..=LEVELS)
         .map(|level| {
             let mut mask = alpha.clone();
-            if level > 0 {
-                gaussian(
-                    &mut mask,
-                    width,
-                    MAX_SIGMA * scale * level as f32 / LEVELS as f32,
-                );
-            }
+            let sigma = MIN_SIGMA + (MAX_SIGMA - MIN_SIGMA) * level as f32 / LEVELS as f32;
+            gaussian(&mut mask, width, sigma * scale);
             let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width as u32, height as u32);
             for (pixel, alpha) in buffer.make_mut_slice().iter_mut().zip(mask) {
                 *pixel = Rgba8Pixel::new(255, 255, 255, (alpha * 255.0).round() as u8);
