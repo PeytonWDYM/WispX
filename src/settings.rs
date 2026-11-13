@@ -13,6 +13,8 @@ use std::{
 pub struct Settings {
     pub sounds: bool,
     pub idle_pill: bool,
+    /// Lower other apps' playback while recording.
+    pub lower_audio: bool,
     pub language: String,
     pub hotkey: Hotkey,
     pub microphone: String,
@@ -26,6 +28,7 @@ impl Default for Settings {
         Self {
             sounds: true,
             idle_pill: true,
+            lower_audio: true,
             language: String::new(),
             hotkey: Hotkey::default(),
             microphone: String::new(),

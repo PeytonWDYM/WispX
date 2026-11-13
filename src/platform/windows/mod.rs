@@ -2,6 +2,7 @@ mod chromium;
 pub mod clipboard;
 pub mod context;
 pub mod context_probe;
+pub mod duck;
 pub mod files;
 pub mod fonts;
 pub mod hook;

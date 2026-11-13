@@ -2,6 +2,7 @@
 pub mod clipboard;
 pub mod desktop;
 pub mod diagnose;
+pub mod duck;
 pub mod hotkey;
 pub mod instance;
 pub mod kwin;

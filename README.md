@@ -20,7 +20,7 @@ The exe isn't code-signed, so SmartScreen may warn you. Click **More info → Ru
 
 On Linux, unpack `WispX-linux-x86_64.tar.gz` from the same release somewhere permanent, then run `WispX`. It adds an app launcher entry. Sign in to the Codex app or CLI with your ChatGPT account first.
 
-Linux needs ALSA's `libasound.so.2`. On Wayland, global shortcuts need `xdg-desktop-portal` 1.18+ and a GlobalShortcuts backend, such as Plasma 6's `xdg-desktop-portal-kde`. The pill uses layer shell where available (including KWin), or XWayland otherwise. A StatusNotifierItem tray shows the tray menu; without one, launch WispX again to open Options. `WispX --diagnose` reports desktop support, and `WispX --uninstall` removes its launcher and sign-in entries.
+Linux needs ALSA's `libasound.so.2`. On Wayland, global shortcuts need `xdg-desktop-portal` 1.18+ and a GlobalShortcuts backend, such as Plasma 6's `xdg-desktop-portal-kde`. The pill uses layer shell where available (including KWin), or XWayland otherwise. A StatusNotifierItem tray shows the tray menu; without one, launch WispX again to open Options. Lowering other audio while dictating uses `pactl` (from `pulseaudio-utils` or `libpulse`) with PulseAudio or PipeWire's `pipewire-pulse`, plus PipeWire's `pw-cli` so apps' remembered volumes stay as they were; without them, dictation works and other audio is left alone. `WispX --diagnose` reports desktop support, and `WispX --uninstall` removes its launcher and sign-in entries.
 
 ## Use
 
@@ -31,6 +31,8 @@ Linux needs ALSA's `libasound.so.2`. On Wayland, global shortcuts need `xdg-desk
 | **Esc** | Cancel |
 
 Click the tray icon to open **Options**. From there you can change the shortcut, microphone, language, sounds, and startup behavior.
+
+While you dictate, other apps' audio drops to 20% of its volume and returns to its earlier level as soon as recording ends or is cancelled. Volumes you change meanwhile are kept. Turn this off under **Options → General → Lower other audio while dictating**.
 
 The **Stats** page shows word counts and dictation speed, with a chart of the last 30 days. It saves only counts and spoken time in `stats.json` next to your settings, never the text; you can reset it anytime.
 

@@ -134,6 +134,7 @@ impl Options {
         {
             let settings = &store.borrow().value;
             window.set_sounds(settings.sounds);
+            window.set_lower_audio(settings.lower_audio);
             window.set_cleanup(settings.cleanup);
             // Unsupported hosts show it off without changing the saved choice.
             window.set_cleanup_context(settings.cleanup_context && window.get_context_supported());
@@ -483,6 +484,10 @@ impl Options {
             }
             Action::Sounds => {
                 self.store.borrow_mut().value.sounds = self.window.get_sounds();
+                self.save();
+            }
+            Action::LowerAudio => {
+                self.store.borrow_mut().value.lower_audio = self.window.get_lower_audio();
                 self.save();
             }
             Action::IdlePill => {

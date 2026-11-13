@@ -1,6 +1,9 @@
 //! Portable dictation controller. Platform hosts execute the returned effects.
 use crate::{
-    audio::recorder::{Levels, RecordError, Recorder},
+    audio::{
+        duck,
+        recorder::{Levels, RecordError, Recorder},
+    },
     settings::Settings,
     transcribe::{TranscribeError, auth},
 };
@@ -39,6 +42,8 @@ impl Pill {
 struct ActiveRecording {
     recorder: Recorder,
     started: Instant,
+    /// Restores other playback as soon as the recording ends, however it ends.
+    _lowered: Option<duck::Guard>,
 }
 /// Completion can overlap the next recording; only that recording owns the pill.
 #[derive(Default)]
@@ -86,6 +91,7 @@ impl Controller {
         self.active = Some(ActiveRecording {
             recorder,
             started: Instant::now(),
+            _lowered: settings.lower_audio.then(duck::begin),
         });
         Ok(Some(Pill::Recording(levels)))
     }

@@ -1,3 +1,4 @@
+pub mod duck;
 pub mod opus;
 pub mod recorder;
 mod resampler;

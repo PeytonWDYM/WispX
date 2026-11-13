@@ -4,7 +4,7 @@ export { Glyphs, Palette }
 import { CleanupPage } from "cleanup.slint";
 import { StatsPage } from "stats.slint";
 import { SecretText } from "secret.slint";
-export enum Action { check-account, change-shortcut, reset-shortcut, test-microphone, cleanup, cleanup-context, sounds, idle-pill, startup, close, page-changed, reset-stats }
+export enum Action { check-account, change-shortcut, reset-shortcut, test-microphone, cleanup, cleanup-context, sounds, lower-audio, idle-pill, startup, close, page-changed, reset-stats }
 export component OptionsWindow inherits Window {
     in property <string> version;
     title: "WispX Options";
@@ -43,6 +43,7 @@ export component OptionsWindow inherits Window {
     in property <float> level;
     in property <string> test-error;
     in-out property <bool> sounds;
+    in-out property <bool> lower-audio;
     in-out property <bool> idle-pill;
     in-out property <bool> startup;
     in property <bool> cleanup-available;
@@ -221,6 +222,7 @@ export component OptionsWindow inherits Window {
                         vertical-stretch: 0;
                         spacing: 12px;
                         ToggleCard { icon-font: root.icon-font; glyph: Glyphs.sounds; title: "Play sounds"; detail: "Audio cues when dictation starts and stops."; checked <=> root.sounds; toggled => { root.action(Action.sounds); } }
+                        ToggleCard { icon-font: root.icon-font; glyph: Glyphs.lower-audio; title: "Lower other audio while dictating"; detail: "Other apps play at 20% of their volume while you talk, then return to their earlier level."; checked <=> root.lower-audio; toggled => { root.action(Action.lower-audio); } }
                         ToggleCard { icon-font: root.icon-font; glyph: Glyphs.idle-pill; title: "Show idle pill"; detail: "Keep a small indicator above the taskbar."; checked <=> root.idle-pill; toggled => { root.action(Action.idle-pill); } }
                         ToggleCard { icon-font: root.icon-font; glyph: Glyphs.startup; title: root.startup-title; detail: "Have WispX ready when you sign in."; checked <=> root.startup; toggled => { root.action(Action.startup); } }
                         Description { text: "WispX " + root.version; }

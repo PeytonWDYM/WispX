@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     app::{Controller, Delivery, Dictation, DictationError, Finish, MessageKind, Pill},
-    audio::{opus, sounds::Cue},
+    audio::{duck, opus, sounds::Cue},
     hotkey_machine::HotkeyEvent,
     settings::{Settings, SettingsStore},
     stats::StatsStore,
@@ -71,6 +71,8 @@ impl Runtime {
         )?;
         let client = ChatGpt::default();
         client.warmup();
+        // Restores playback a crashed WispX left lowered.
+        duck::start();
         let app = Rc::new(Self {
             controller: RefCell::new(Controller::default()),
             store: Rc::new(RefCell::new(store)),
@@ -121,6 +123,8 @@ impl Runtime {
                 }
                 app.controller.borrow_mut().cancel();
                 app.max_timer.stop();
+                // Give lowered playback a moment to return before the process exits.
+                duck::flush(Duration::from_secs(3));
             }
         });
     }

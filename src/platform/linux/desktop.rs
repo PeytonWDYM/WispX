@@ -127,6 +127,7 @@ pub fn style_options(window: &OptionsWindow) {
     glyphs.set_signed_out("⚠".into());
     glyphs.set_language("⊕".into());
     glyphs.set_sounds("♫".into());
+    glyphs.set_lower_audio("♩".into());
     glyphs.set_idle_pill("▬".into());
     glyphs.set_startup("↻".into());
     glyphs.set_context("¶".into());
