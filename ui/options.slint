@@ -3,8 +3,10 @@ import { Card, CardHeader, Heading, Description, Glyphs, ToggleCard } from "comp
 export { Glyphs, Palette }
 import { CleanupPage } from "cleanup.slint";
 import { StatsPage } from "stats.slint";
+import { ListenPage, ListenLine, ListenSource, ListenTask } from "listen.slint";
+export { ListenLine, ListenSource, ListenTask }
 import { SecretText } from "secret.slint";
-export enum Action { check-account, change-shortcut, reset-shortcut, test-microphone, cleanup, cleanup-context, sounds, lower-audio, idle-pill, startup, close, page-changed, reset-stats }
+export enum Action { check-account, change-shortcut, reset-shortcut, test-microphone, cleanup, cleanup-context, sounds, lower-audio, idle-pill, startup, close, page-changed, reset-stats, change-listen-shortcut, reset-listen-shortcut, listen-start, listen-stop, listen-discard, listen-save, listen-copy, listen-new, listen-retry, listen-microphone }
 export component OptionsWindow inherits Window {
     in property <string> version;
     title: "WispX Options";
@@ -34,7 +36,43 @@ export component OptionsWindow inherits Window {
     in property <string> account-detail;
     in property <[string]> keys;
     in-out property <bool> capturing;
+    // Which shortcut a capture is for: 0 dictation, 1 Listen.
+    in-out property <int> capture-target;
     in property <string> error;
+    in property <[string]> listen-keys;
+    in property <string> listen-shortcut-hint: "Press once to start listening, again to stop and write notes · Esc discards";
+    in property <string> listen-shortcut-error;
+    in property <string> listen-shortcut;
+    in property <int> listen-stage;
+    in property <bool> signed-in;
+    in property <[string]> listen-outputs;
+    in-out property <int> listen-output;
+    in-out property <bool> listen-include-microphone;
+    in property <[string]> listen-microphones;
+    in-out property <int> listen-microphone;
+    in property <string> listen-error;
+    in property <string> listen-elapsed;
+    in property <[ListenSource]> listen-sources;
+    in property <[float]> listen-levels;
+    in property <[ListenLine]> listen-lines;
+    in property <string> listen-status;
+    in property <string> listen-step;
+    in property <float> listen-progress;
+    in property <string> listen-title;
+    in property <string> listen-details;
+    in property <string> listen-saved;
+    in property <string> listen-warning;
+    in property <int> listen-summary-state;
+    in property <string> listen-summary-error;
+    in property <string> listen-tldr;
+    in property <string> listen-coverage;
+    in property <[string]> listen-decisions;
+    in property <[ListenTask]> listen-tasks;
+    in property <string> listen-transcript;
+    in property <string> listen-transcript-note;
+    in property <string> listen-raw;
+    in-out property <int> listen-tab;
+    in-out property <bool> listen-show-raw;
     in property <[string]> microphones;
     in-out property <int> microphone;
     in property <[string]> languages;
@@ -69,6 +107,10 @@ export component OptionsWindow inherits Window {
     callback language-selected(int);
     callback dictionary-add(string);
     callback dictionary-remove(int);
+    callback listen-output-selected(int);
+    callback listen-microphone-selected(int);
+    // Moves keyboard focus back to the window after a page's controls are replaced.
+    public function focus-page() { keys-scope.focus(); }
     changed page => { root.action(Action.page-changed); }
     forward-focus: keys-scope;
     keys-scope := FocusScope {
@@ -89,11 +131,12 @@ export component OptionsWindow inherits Window {
                 Rectangle { x: parent.width - 1px; width: 1px; background: Palette.border; }
                 VerticalLayout {
                     padding: 12px; padding-top: 24px; spacing: 4px;
-                    for name[index] in ["Account", "Shortcut", "Audio", "Cleanup", "Stats", "General"]: Rectangle {
+                    for name[index] in ["Account", "Shortcut", "Audio", "Cleanup", "Listen", "Stats", "General"]: Rectangle {
                         height: 46px; border-radius: 6px;
                         background: root.page == index || hit.has-hover ? Palette.alternate-background : transparent;
                         Text { x: 40px; text: name; color: Palette.foreground; vertical-alignment: center; }
-                        Text { x: 16px; text: [Glyphs.account, Glyphs.shortcut, Glyphs.audio, Glyphs.cleanup, Glyphs.stats, Glyphs.general][index]; font-family: root.icon-font; color: Palette.foreground; vertical-alignment: center; }
+                        Text { x: 16px; text: [Glyphs.account, Glyphs.shortcut, Glyphs.audio, Glyphs.cleanup, Glyphs.listen, Glyphs.stats, Glyphs.general][index]; font-family: root.icon-font; color: Palette.foreground; vertical-alignment: center; }
+                        if index == 4: Text { x: parent.width - 52px; width: 40px; horizontal-alignment: right; text: root.listen-stage == 1 ? "●" : "New"; font-size: 11px; color: root.listen-stage == 1 ? #60a5fa : Palette.alternate-foreground; vertical-alignment: center; }
                         hit := TouchArea { clicked => { root.page = index; } }
                     }
                     Rectangle { vertical-stretch: 1; }
@@ -112,7 +155,7 @@ export component OptionsWindow inherits Window {
                 content-width: self.width;
                 VerticalLayout {
                     padding: 28px; padding-top: 24px; spacing: 12px;
-                    Heading { text: ["Account", "Shortcut", "Audio", "Cleanup", "Stats", "General"][root.page]; }
+                    Heading { text: ["Account", "Shortcut", "Audio", "Cleanup", "Listen", "Stats", "General"][root.page]; }
                     Rectangle { height: 12px; }
                     if root.page == 0: Card {
                         HorizontalLayout {
@@ -142,13 +185,13 @@ export component OptionsWindow inherits Window {
                         vertical-stretch: 0;
                         spacing: 12px;
                         Card {
-                            border-color: root.capturing ? Palette.accent-background : Palette.border;
+                            border-color: root.capturing && root.capture-target == 0 ? Palette.accent-background : Palette.border;
                             Text { text: "Dictation shortcut"; font-weight: 600; font-size: 15px; color: Palette.foreground; }
                             Rectangle { height: 12px; }
                             HorizontalLayout {
                                 spacing: 10px;
-                                if root.capturing: Text { text: "Press your shortcut…"; font-size: 20px; color: Palette.foreground; vertical-alignment: center; }
-                                if !root.capturing: HorizontalLayout {
+                                if root.capturing && root.capture-target == 0: Text { text: "Press your shortcut…"; font-size: 20px; color: Palette.foreground; vertical-alignment: center; }
+                                if !root.capturing || root.capture-target != 0: HorizontalLayout {
                                     horizontal-stretch: 0;
                                     spacing: 10px;
                                     for key[index] in root.keys: HorizontalLayout {
@@ -166,13 +209,47 @@ export component OptionsWindow inherits Window {
                                     }
                                 }
                                 Rectangle { horizontal-stretch: 1; }
-                                Button { text: root.capturing ? "Cancel" : "Change…"; primary: !root.capturing; min-width: 110px; height: 32px; horizontal-stretch: 0; clicked => { root.action(Action.change-shortcut); } }
+                                Button { text: root.capturing && root.capture-target == 0 ? "Cancel" : "Change…"; primary: !root.capturing; enabled: !root.capturing || root.capture-target == 0; min-width: 110px; height: 32px; horizontal-stretch: 0; clicked => { root.action(Action.change-shortcut); } }
                             }
                             Description { text: root.shortcut-hint; }
                         }
                         if root.error != "": Description { text: root.error; color: #b88922; }
                         if root.shortcut-capture: HorizontalLayout {
                             Button { text: "Reset to Ctrl + Win"; horizontal-stretch: 0; clicked => { root.action(Action.reset-shortcut); } }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        Card {
+                            border-color: root.capturing && root.capture-target == 1 ? Palette.accent-background : Palette.border;
+                            Text { text: "Listen shortcut"; font-weight: 600; font-size: 15px; color: Palette.foreground; }
+                            Rectangle { height: 12px; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                if root.capturing && root.capture-target == 1: Text { text: "Press your shortcut…"; font-size: 20px; color: Palette.foreground; vertical-alignment: center; }
+                                if !root.capturing || root.capture-target != 1: HorizontalLayout {
+                                    horizontal-stretch: 0;
+                                    spacing: 10px;
+                                    for key[index] in root.listen-keys: HorizontalLayout {
+                                        spacing: 10px;
+                                        if index > 0: Text { text: "+"; font-size: 22px; color: Palette.foreground; vertical-alignment: center; }
+                                        Rectangle {
+                                            horizontal-stretch: 0;
+                                            opacity: root.keycaps-ready ? 1 : 0;
+                                            transform-scale-x: root.keycaps-ready ? 100% : 85%; transform-scale-y: root.keycaps-ready ? 100% : 85%;
+                                            transform-origin: {x:self.width/2,y:self.height/2};
+                                            animate opacity,transform-scale-x,transform-scale-y { duration:root.keycaps-ready ? 200ms : 0ms; delay:root.keycaps-ready ? index*40ms : 0ms; easing:cubic-bezier(0.333333,1,0.666667,1); }
+                                            border-radius: 6px; border-width: 1px; border-color: Palette.border; background: Palette.control-background;
+                                            HorizontalLayout { padding: 12px; Text { text: key; font-size: 19px; font-weight: 600; color: Palette.foreground; } }
+                                        }
+                                    }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                Button { text: root.capturing && root.capture-target == 1 ? "Cancel" : "Change…"; primary: !root.capturing; enabled: !root.capturing || root.capture-target == 1; min-width: 110px; height: 32px; horizontal-stretch: 0; clicked => { root.action(Action.change-listen-shortcut); } }
+                            }
+                            Description { text: root.listen-shortcut-hint; }
+                        }
+                        if root.listen-shortcut-error != "": Description { text: root.listen-shortcut-error; color: #b88922; }
+                        if root.shortcut-capture: HorizontalLayout {
+                            Button { text: "Reset to Ctrl + Shift + F8"; horizontal-stretch: 0; clicked => { root.action(Action.reset-listen-shortcut); } }
                             Rectangle { horizontal-stretch: 1; }
                         }
                     }
@@ -210,7 +287,52 @@ export component OptionsWindow inherits Window {
                         add-entry(entry) => { root.dictionary-add(entry); }
                         remove-entry(index) => { root.dictionary-remove(index); }
                     }
-                    if root.page == 4: StatsPage {
+                    if root.page == 4: ListenPage {
+                        icon-font: root.icon-font;
+                        stage: root.listen-stage;
+                        signed-in: root.signed-in;
+                        notes-available: root.cleanup-available;
+                        outputs: root.listen-outputs;
+                        output <=> root.listen-output;
+                        include-microphone <=> root.listen-include-microphone;
+                        microphones: root.listen-microphones;
+                        microphone <=> root.listen-microphone;
+                        shortcut: root.listen-shortcut;
+                        error: root.listen-error;
+                        elapsed: root.listen-elapsed;
+                        sources: root.listen-sources;
+                        levels: root.listen-levels;
+                        lines: root.listen-lines;
+                        status: root.listen-status;
+                        step: root.listen-step;
+                        progress: root.listen-progress;
+                        title: root.listen-title;
+                        details: root.listen-details;
+                        saved: root.listen-saved;
+                        warning: root.listen-warning;
+                        summary-state: root.listen-summary-state;
+                        summary-error: root.listen-summary-error;
+                        tldr: root.listen-tldr;
+                        coverage: root.listen-coverage;
+                        decisions: root.listen-decisions;
+                        tasks: root.listen-tasks;
+                        transcript: root.listen-transcript;
+                        transcript-note: root.listen-transcript-note;
+                        raw: root.listen-raw;
+                        tab <=> root.listen-tab;
+                        show-raw <=> root.listen-show-raw;
+                        output-selected(index) => { root.listen-output-selected(index); }
+                        microphone-selected(index) => { root.listen-microphone-selected(index); }
+                        microphone-toggled => { root.action(Action.listen-microphone); }
+                        start-listening => { root.action(Action.listen-start); }
+                        stop-listening => { root.action(Action.listen-stop); }
+                        discard => { root.action(Action.listen-discard); }
+                        save => { root.action(Action.listen-save); }
+                        copy => { root.action(Action.listen-copy); }
+                        new-session => { root.action(Action.listen-new); }
+                        retry => { root.action(Action.listen-retry); }
+                    }
+                    if root.page == 5: StatsPage {
                         icon-font: root.icon-font;
                         totals: root.stats-totals; has-stats: root.has-stats;
                         line: root.stats-line; area: root.stats-area;
@@ -218,7 +340,7 @@ export component OptionsWindow inherits Window {
                         last-y: root.stats-last-y; error: root.stats-error;
                         reset => { root.action(Action.reset-stats); }
                     }
-                    if root.page == 5: VerticalLayout {
+                    if root.page == 6: VerticalLayout {
                         vertical-stretch: 0;
                         spacing: 12px;
                         ToggleCard { icon-font: root.icon-font; glyph: Glyphs.sounds; title: "Play sounds"; detail: "Audio cues when dictation starts and stops."; checked <=> root.sounds; toggled => { root.action(Action.sounds); } }

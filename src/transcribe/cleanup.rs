@@ -3,10 +3,8 @@ use super::{
     ChatGpt,
     auth::{self, AuthMode},
 };
-use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
-pub const MODEL: &str = "gpt-6-luna";
 pub const MAX_TRANSCRIPT_CHARS: usize = 4_000;
 pub const MAX_CONTEXT_CHARS: usize = 2_000;
 pub const MAX_DICTIONARY_ENTRIES: usize = 200;
@@ -98,50 +96,6 @@ pub fn join_context(text: String, surrounding: &str) -> String {
     format!(" {text}")
 }
 
-/// Read complete SSE frames; done supersedes deltas, and a later failure wins.
-fn parse_sse(stream: &str) -> Option<String> {
-    let normalized = stream.replace("\r\n", "\n");
-    let mut deltas = String::new();
-    let mut done = None;
-    let mut completed = false;
-    for frame in normalized.split("\n\n") {
-        let mut event = "";
-        let mut data = Vec::new();
-        for line in frame.lines() {
-            if let Some(value) = line.strip_prefix("event:") {
-                event = value.trim();
-            }
-            if let Some(value) = line.strip_prefix("data:") {
-                data.push(value.trim_start());
-            }
-        }
-        if matches!(event, "response.failed" | "error") {
-            return None;
-        }
-        if data.is_empty() {
-            continue;
-        }
-        let data = data.join("\n");
-        if data == "[DONE]" {
-            completed = true;
-            continue;
-        }
-        let value: Value = serde_json::from_str(&data).ok()?;
-        let kind = value["type"].as_str().unwrap_or(event);
-        match kind {
-            "response.failed" | "error" => return None,
-            "response.output_text.done" => {
-                done = Some(value["text"].as_str()?.to_owned());
-            }
-            "response.output_text.delta" => deltas.push_str(value["delta"].as_str()?),
-            "response.completed" => completed = true,
-            _ => {}
-        }
-    }
-    let text = done.or_else(|| completed.then_some(deltas))?;
-    (!text.trim().is_empty()).then_some(text)
-}
-
 impl ChatGpt {
     /// This is a blocking worker operation, including a hard deadline around token refresh.
     pub fn cleanup(
@@ -164,26 +118,7 @@ impl ChatGpt {
         let worker = std::thread::Builder::new()
             .name("transcript-cleanup".into())
             .spawn(move || {
-                let reply = (|| {
-                    let access = if auth::expired(&login.access) {
-                        auth::refresh(&client.agent, &login.access).unwrap_or(login.access)
-                    } else {
-                        login.access
-                    };
-                    let (mut status, mut body) =
-                        client.cleanup_post(&prompt, &access, &login.account, deadline)?;
-                    if status == 401
-                        && let Some(fresh) = auth::refresh(&client.agent, &access)
-                    {
-                        (status, body) =
-                            client.cleanup_post(&prompt, &fresh, &login.account, deadline)?;
-                    }
-                    if status != 200 {
-                        return None;
-                    }
-                    parse_sse(&body)
-                })();
-                let _ = tx.send(reply);
+                let _ = tx.send(client.respond(INSTRUCTIONS, &prompt, "low", deadline).ok());
             });
         if worker.is_err() {
             return raw;
@@ -194,30 +129,6 @@ impl ChatGpt {
                 .ok()
                 .flatten(),
         )
-    }
-
-    fn cleanup_post(
-        &self,
-        prompt: &str,
-        access: &str,
-        account: &str,
-        deadline: Instant,
-    ) -> Option<(u16, String)> {
-        let remaining = deadline.checked_duration_since(Instant::now())?;
-        let mut response = self.agent.post("https://chatgpt.com/backend-api/codex/responses")
-            .header("Authorization", format!("Bearer {access}"))
-            .header("chatgpt-account-id", account)
-            .header("originator", "codex_desktop")
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream")
-            .config().timeout_global(Some(remaining)).build()
-            .send_json(json!({"model": MODEL, "instructions": INSTRUCTIONS,
-                "input": [{"type":"message", "role":"user", "content":[{"type":"input_text", "text":prompt}]}],
-                "reasoning":{"effort":"low"}, "stream":true, "store":false})).ok()?;
-        Some((
-            response.status().as_u16(),
-            response.body_mut().read_to_string().ok()?,
-        ))
     }
 }
 
@@ -270,8 +181,6 @@ mod tests {
     // boundary, context over 2,000 chars, dictionary over 100, or transcript truncation.
     // Dictionary: whitespace/empty entries, duplicate canonical entries, altered casing,
     // or saving more than 200 entries.
-    // SSE: CRLF/multiline events, deltas duplicated by done, absent event names, malformed
-    // JSON, failed/error events after valid text, empty output, or incomplete streams.
     // Fallback: disabled cleanup, API-key/unknown auth, empty/overlong transcript, timeout,
     // request failure, or blank output must preserve the raw transcript exactly.
     use super::*;
@@ -312,45 +221,6 @@ mod tests {
             normalize_dictionary((0..210).map(|i| format!("symbol{i}"))).len(),
             MAX_DICTIONARY_ENTRIES
         );
-    }
-
-    #[test]
-    fn sse_prefers_done_and_accepts_delta_only_completion() {
-        assert_eq!(parse_sse("event: response.output_text.delta\r\ndata: {\"delta\":\"wrong\"}\r\n\r\nevent: response.output_text.done\r\ndata: {\"text\":\"WispX.\"}\r\n\r\n").as_deref(), Some("WispX."));
-        assert_eq!(parse_sse("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"!\"}\n\nevent: response.completed\ndata: {}\n\n").as_deref(), Some("Hi!"));
-        assert_eq!(
-            parse_sse("event: response.output_text.done\ndata: {\n data: ignored\n\n"),
-            None
-        );
-        assert_eq!(
-            parse_sse("event: response.output_text.done\ndata: {\ndata: \"text\":\"yes\"}\n\n")
-                .as_deref(),
-            Some("yes")
-        );
-    }
-
-    #[test]
-    fn sse_rejects_failures_and_incomplete_or_empty_output() {
-        for ending in [
-            "event: response.failed\ndata: {}\n\n",
-            "event: error\ndata: {}\n\n",
-            "data: {\"type\":\"error\"}\n\n",
-            "data: broken\n\n",
-        ] {
-            assert!(
-                parse_sse(&format!(
-                    "event: response.output_text.done\ndata: {{\"text\":\"ok\"}}\n\n{ending}"
-                ))
-                .is_none()
-            );
-        }
-        for stream in [
-            "",
-            "event: response.output_text.delta\ndata: {\"delta\":\"partial\"}\n\n",
-            "event: response.output_text.done\ndata: {\"text\":\"  \"}\n\n",
-        ] {
-            assert!(parse_sse(stream).is_none());
-        }
     }
 
     #[test]

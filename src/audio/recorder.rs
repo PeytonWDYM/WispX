@@ -47,7 +47,7 @@ impl Levels {
     pub fn peak(&self) -> f32 {
         f32::from_bits(self.peak.load(Ordering::Relaxed))
     }
-    fn update(&self, sum: f64, count: usize) {
+    pub(super) fn update(&self, sum: f64, count: usize) {
         let rms = if count == 0 {
             0.0
         } else {

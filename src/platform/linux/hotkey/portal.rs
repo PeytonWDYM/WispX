@@ -5,6 +5,7 @@
 //! Plasma's shortcut system can't bind a modifier-only chord such as Ctrl + Win,
 //! so a modifier-only setting falls back to Ctrl + Win + D. Hands-free and cancel
 //! are separate shortcuts because Space and Esc can't be claimed per dictation.
+//! Listen has its own toggle; the cancel shortcut also discards a Listen capture.
 use super::{DesktopStatus, HookMessage, Sink, keymap};
 use crate::{hotkey::Hotkey, hotkey_machine::HotkeyEvent};
 use ashpd::desktop::global_shortcuts::{
@@ -20,6 +21,7 @@ use std::{
 pub const HOLD: &str = "dictate";
 pub const HANDS_FREE: &str = "hands-free";
 pub const CANCEL: &str = "cancel";
+pub const LISTEN: &str = "listen";
 /// Plasma releases a held shortcut the moment another fires, so going from
 /// holding `dictate` to pressing `hands-free` first looks exactly like letting go.
 /// Holding each release back briefly lets the following press replace it.
@@ -27,9 +29,9 @@ pub const RELEASE_GRACE: Duration = Duration::from_millis(60);
 const RETRY: Duration = Duration::from_secs(5);
 const RETRY_LIMIT: Duration = Duration::from_secs(300);
 
-/// Preferred triggers: the hold chord, then the same modifiers with Space and Backspace.
-/// Plain Esc stays with apps; Ctrl + Win + Esc is KWin's Kill Window shortcut.
-pub fn triggers(hotkey: &Hotkey) -> [String; 3] {
+/// Preferred triggers: the hold chord, then the same modifiers with Space and Backspace,
+/// then Listen's own chord. Plain Esc stays with apps; Ctrl + Win + Esc is KWin's Kill Window.
+pub fn triggers(hotkey: &Hotkey, listen: &Hotkey) -> [String; 4] {
     let hold = keymap::trigger(hotkey).unwrap_or_else(|| "CTRL+LOGO+d".into());
     let modifiers = hold
         .rsplit_once('+')
@@ -38,6 +40,9 @@ pub fn triggers(hotkey: &Hotkey) -> [String; 3] {
         hold.clone(),
         format!("{modifiers}+space"),
         format!("{modifiers}+BackSpace"),
+        keymap::trigger(listen)
+            .or_else(|| keymap::trigger(&Hotkey::listen_default()))
+            .expect("the default has a main key"),
     ]
 }
 
@@ -53,9 +58,24 @@ enum Phase {
 pub struct Translator {
     phase: Phase,
     release_due: Option<Instant>,
+    /// Listen is capturing, so the cancel shortcut discards it.
+    listening: bool,
+    /// Listen's shortcut is down; a portal may repeat Activated until Deactivated.
+    listen_held: bool,
 }
 impl Translator {
+    pub fn set_listening(&mut self, listening: bool) {
+        self.listening = listening;
+    }
     pub fn activated(&mut self, id: &str) -> Vec<HotkeyEvent> {
+        if id == LISTEN {
+            // A held key toggles once. Leaves a held dictation's pending release alone:
+            // Plasma reports it first.
+            if std::mem::replace(&mut self.listen_held, true) {
+                return Vec::new();
+            }
+            return vec![HotkeyEvent::ListenToggle];
+        }
         self.release_due = None;
         match (id, self.phase) {
             (HOLD | HANDS_FREE, Phase::Locked) => {
@@ -78,10 +98,17 @@ impl Translator {
                 self.phase = Phase::Idle;
                 vec![HotkeyEvent::Cancel]
             }
+            (CANCEL, Phase::Idle) if self.listening => {
+                self.listening = false;
+                vec![HotkeyEvent::ListenCancel]
+            }
             _ => Vec::new(),
         }
     }
     pub fn deactivated(&mut self, id: &str, now: Instant) {
+        if id == LISTEN {
+            self.listen_held = false;
+        }
         if id == HOLD && self.phase == Phase::Holding {
             self.release_due = Some(now + RELEASE_GRACE);
         }
@@ -111,6 +138,7 @@ impl Translator {
     pub fn lost(&mut self) -> Option<HotkeyEvent> {
         let released = self.release_due.is_some();
         let phase = std::mem::take(&mut self.phase);
+        self.listen_held = false;
         self.release_due = None;
         match phase {
             Phase::Idle => None,
@@ -126,10 +154,10 @@ pub struct Portal {
     bound: Arc<Mutex<Option<Arc<Bound>>>>,
 }
 impl Portal {
-    pub fn start(hotkey: &Hotkey, sink: Sink) -> Self {
+    pub fn start(hotkey: &Hotkey, listen_key: &Hotkey, sink: Sink) -> Self {
         let translator = Arc::new(Mutex::new(Translator::default()));
         let bound = Arc::new(Mutex::new(None));
-        let triggers = triggers(hotkey);
+        let triggers = triggers(hotkey, listen_key);
         let (worker_translator, worker_bound) = (translator.clone(), bound.clone());
         thread::Builder::new()
             .name("portal-shortcuts".into())
@@ -174,6 +202,12 @@ impl Portal {
     pub fn force_idle(&self) {
         self.translator.lock().expect("portal lock").force_idle();
     }
+    pub fn set_listening(&self, listening: bool) {
+        self.translator
+            .lock()
+            .expect("portal lock")
+            .set_listening(listening);
+    }
     /// Opens the desktop's shortcut settings for this session (portal version 2).
     pub fn configure(&self) {
         let Some(bound) = self.bound.lock().expect("portal lock").clone() else {
@@ -215,12 +249,13 @@ fn status(shortcuts: &[Shortcut]) -> DesktopStatus {
             .find(|s| s.id() == id)
             .map(|s| s.trigger_description().trim().to_owned())
             .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| "not assigned".to_owned())
+            .unwrap_or_else(|| super::NOT_ASSIGNED.to_owned())
     };
     DesktopStatus::Bound {
         hold: find(HOLD),
         hands_free: find(HANDS_FREE),
         cancel: find(CANCEL),
+        listen: find(LISTEN),
     }
 }
 enum Next {
@@ -231,7 +266,7 @@ enum Next {
     Closed,
 }
 async fn listen(
-    triggers: &[String; 3],
+    triggers: &[String; 4],
     sink: &Sink,
     translator: &Mutex<Translator>,
     bound: &Mutex<Option<Arc<Bound>>>,
@@ -244,7 +279,10 @@ async fn listen(
         NewShortcut::new(HOLD, "Hold to dictate").preferred_trigger(triggers[0].as_str()),
         NewShortcut::new(HANDS_FREE, "Dictate hands-free (start or finish)")
             .preferred_trigger(triggers[1].as_str()),
-        NewShortcut::new(CANCEL, "Cancel dictation").preferred_trigger(triggers[2].as_str()),
+        NewShortcut::new(CANCEL, "Cancel dictation, or discard Listen")
+            .preferred_trigger(triggers[2].as_str()),
+        NewShortcut::new(LISTEN, "Listen: start, or stop and write notes")
+            .preferred_trigger(triggers[3].as_str()),
     ];
     let mut activated = portal.receive_activated().await?;
     let mut deactivated = portal.receive_deactivated().await?;
@@ -412,17 +450,75 @@ mod tests {
 
     #[test]
     fn triggers_follow_the_setting_where_the_spec_allows() {
+        let listen = Hotkey::listen_default();
         assert_eq!(
-            triggers(&Hotkey::default()),
-            ["CTRL+LOGO+d", "CTRL+LOGO+space", "CTRL+LOGO+BackSpace"]
+            triggers(&Hotkey::default(), &listen),
+            [
+                "CTRL+LOGO+d",
+                "CTRL+LOGO+space",
+                "CTRL+LOGO+BackSpace",
+                "CTRL+SHIFT+F8"
+            ]
         );
         assert_eq!(
-            triggers(&"Ctrl+Shift+D".parse().expect("chord")),
-            ["CTRL+SHIFT+d", "CTRL+SHIFT+space", "CTRL+SHIFT+BackSpace"]
+            triggers(
+                &"Ctrl+Shift+D".parse().expect("chord"),
+                &"Alt+F9".parse().expect("chord")
+            ),
+            [
+                "CTRL+SHIFT+d",
+                "CTRL+SHIFT+space",
+                "CTRL+SHIFT+BackSpace",
+                "ALT+F9"
+            ]
         );
         assert_eq!(
-            triggers(&"F8".parse().expect("f8")),
-            ["F8", "CTRL+LOGO+space", "CTRL+LOGO+BackSpace"]
+            triggers(
+                &"F8".parse().expect("f8"),
+                &"Ctrl+Alt".parse().expect("modifiers")
+            ),
+            [
+                "F8",
+                "CTRL+LOGO+space",
+                "CTRL+LOGO+BackSpace",
+                "CTRL+SHIFT+F8"
+            ]
         );
+    }
+
+    #[test]
+    fn listen_toggles_and_cancel_discards_only_while_it_captures() {
+        let now = Instant::now();
+        let mut t = Translator::default();
+        assert_eq!(t.activated(LISTEN), vec![HotkeyEvent::ListenToggle]);
+        // Repeated activations of a held key never stop what the press started.
+        assert!(t.activated(LISTEN).is_empty());
+        assert!(t.activated(LISTEN).is_empty());
+        t.deactivated(LISTEN, now);
+        assert_eq!(t.activated(LISTEN), vec![HotkeyEvent::ListenToggle]);
+        t.deactivated(LISTEN, now);
+        // A session lost while it was held forgets the press.
+        t.activated(LISTEN);
+        assert_eq!(t.lost(), None);
+        assert_eq!(t.activated(LISTEN), vec![HotkeyEvent::ListenToggle]);
+        t.deactivated(LISTEN, now);
+        assert!(
+            t.activated(CANCEL).is_empty(),
+            "cancel does nothing while idle"
+        );
+        t.set_listening(true);
+        assert_eq!(t.activated(CANCEL), vec![HotkeyEvent::ListenCancel]);
+        assert!(t.activated(CANCEL).is_empty());
+        // Dictation keeps the cancel shortcut first, and Listen's press doesn't swallow
+        // a held dictation's pending release.
+        t.set_listening(true);
+        t.activated(HOLD);
+        t.deactivated(HOLD, now);
+        assert_eq!(t.activated(LISTEN), vec![HotkeyEvent::ListenToggle]);
+        t.deactivated(LISTEN, now);
+        assert_eq!(t.due(now + RELEASE_GRACE), Some(HotkeyEvent::Release));
+        t.activated(HOLD);
+        assert_eq!(t.activated(CANCEL), vec![HotkeyEvent::Cancel]);
+        assert_eq!(t.activated(CANCEL), vec![HotkeyEvent::ListenCancel]);
     }
 }

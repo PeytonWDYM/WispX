@@ -1,7 +1,7 @@
 //! The hook thread performs only state transitions and posts work to the UI.
 use super::input;
 use crate::{
-    hotkey::Hotkey,
+    hotkey::{Hotkey, listen_conflict},
     hotkey_machine::{HotkeyEvent, HotkeyMachine, KeyEvent},
 };
 use std::{
@@ -39,9 +39,16 @@ pub struct Hook {
     thread: Option<JoinHandle<()>>,
 }
 impl Hook {
-    pub fn start(hotkey: Hotkey, sink: Sink) -> windows::core::Result<Self> {
+    /// A Listen shortcut that collides with dictation is left unwatched.
+    pub fn start(hotkey: Hotkey, listen: Hotkey, sink: Sink) -> windows::core::Result<Self> {
+        let mut keys = HotkeyMachine::new(hotkey.clone());
+        keys.set_listen(
+            listen_conflict(&hotkey, &listen)
+                .is_none()
+                .then_some(listen),
+        );
         let machine = Arc::new(Mutex::new(Control {
-            keys: HotkeyMachine::new(hotkey),
+            keys,
             generation: 0,
         }));
         let state = HookState {
@@ -85,12 +92,21 @@ impl Hook {
             thread: Some(thread),
         })
     }
-    pub fn set_hotkey(&self, key: Hotkey) {
+    pub fn set_hotkeys(&self, hotkey: Hotkey, listen: Hotkey) {
+        let listen = listen_conflict(&hotkey, &listen)
+            .is_none()
+            .then_some(listen);
+        let mut control = self.machine.lock().expect("hook does not panic");
+        control.keys.set_hotkey(hotkey);
+        control.keys.set_listen(listen);
+    }
+    /// Listen is capturing, so Esc discards it.
+    pub fn set_listening(&self, listening: bool) {
         self.machine
             .lock()
             .expect("hook does not panic")
             .keys
-            .set_hotkey(key);
+            .set_listening(listening);
     }
     pub fn force_idle(&self) {
         self.machine

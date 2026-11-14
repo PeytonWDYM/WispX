@@ -1,11 +1,15 @@
 //! X11 shortcuts: XInput2 raw key events feed the same state machine as the
 //! Windows hook. X11 can't drop an event after the fact, so the keys Windows
 //! swallows are claimed ahead of time with grabs that follow the machine's state:
-//! Space while it would lock hands-free, Esc while dictating, the main key of a
-//! chord shortcut, and the whole keyboard while Options captures a shortcut.
+//! Space while it would lock hands-free, Esc while dictating or listening, the main
+//! keys of chord shortcuts (dictation and Listen), and the whole keyboard while
+//! Options captures a shortcut.
 use super::{HookMessage, Sink, keymap};
 use crate::{
-    hotkey::{ESCAPE, Hotkey, LALT, LCTRL, LSHIFT, LWIN, RALT, RCTRL, RSHIFT, RWIN, SPACE},
+    hotkey::{
+        ESCAPE, Hotkey, LALT, LCTRL, LSHIFT, LWIN, RALT, RCTRL, RSHIFT, RWIN, SPACE,
+        listen_conflict,
+    },
     hotkey_machine::{HotkeyMachine, KeyEvent},
 };
 use std::{
@@ -43,6 +47,7 @@ fn keycode(vk: u8) -> Option<u8> {
 struct Grabs {
     keyboard: bool,
     main: Option<(u8, ModMask)>,
+    listen: Option<(u8, ModMask)>,
     space: bool,
     escape: bool,
 }
@@ -50,8 +55,9 @@ fn desired(machine: &HotkeyMachine) -> Grabs {
     Grabs {
         keyboard: machine.capturing(),
         main: main_grab(machine.hotkey()),
+        listen: machine.listen().and_then(main_grab),
         space: machine.lock_armed(),
-        escape: machine.dictating(),
+        escape: machine.dictating() || machine.listening(),
     }
 }
 fn modifiers(hotkey: &Hotkey) -> ModMask {
@@ -75,6 +81,7 @@ fn main_grab(hotkey: &Hotkey) -> Option<(u8, ModMask)> {
 struct Held {
     keyboard: bool,
     main: Vec<(u8, ModMask)>,
+    listen: Vec<(u8, ModMask)>,
     space: Vec<(u8, ModMask)>,
     escape: Vec<(u8, ModMask)>,
 }
@@ -84,11 +91,13 @@ struct Held {
 enum Refusal {
     Keyboard(String),
     Main,
+    Listen,
     Space,
     Escape,
 }
 impl Refusal {
-    fn message(&self, hotkey: &Hotkey) -> String {
+    fn message(&self, keys: &HotkeyMachine) -> String {
+        let hotkey = keys.hotkey();
         match self {
             Self::Keyboard(reason) => {
                 format!(
@@ -96,6 +105,10 @@ impl Refusal {
                 )
             }
             Self::Main => format!("Another app also uses {hotkey}, and will still receive it"),
+            Self::Listen => format!(
+                "Another app also uses {}, and will still receive it",
+                keys.listen().map(ToString::to_string).unwrap_or_default()
+            ),
             Self::Space => {
                 "Another app uses Space with modifiers; hands-free may also reach it".into()
             }
@@ -104,6 +117,15 @@ impl Refusal {
             }
         }
     }
+}
+/// The dictation machine, watching Listen's shortcut unless it collides with dictation.
+fn machine(hotkey: Hotkey, listen: Hotkey) -> HotkeyMachine {
+    let listen = listen_conflict(&hotkey, &listen)
+        .is_none()
+        .then_some(listen);
+    let mut machine = HotkeyMachine::new(hotkey);
+    machine.set_listen(listen);
+    machine
 }
 /// The X server's grab requests, checked; a seam for failure tests.
 trait GrabServer {
@@ -165,13 +187,24 @@ fn reconcile(
             server.ungrab_keyboard();
         }
     }
-    if want.main != before.main {
-        release(server, &mut held.main);
-        if let Some((key, mask)) = want.main {
+    for (was, now, slot, refusal) in [
+        (before.main, want.main, &mut held.main, Refusal::Main),
+        (
+            before.listen,
+            want.listen,
+            &mut held.listen,
+            Refusal::Listen,
+        ),
+    ] {
+        if was == now {
+            continue;
+        }
+        release(server, slot);
+        if let Some((key, mask)) = now {
             let (granted, complete) = grab_each(server, key, &with_locks(mask));
-            held.main = granted;
+            *slot = granted;
             if !complete {
-                refused.push(Refusal::Main);
+                refused.push(refusal);
             }
         }
     }
@@ -236,9 +269,7 @@ fn settle(server: &impl GrabServer, control: &mut Control) -> Settled {
                 again = true;
             }
             if matches!(refusal, Refusal::Keyboard(_)) || !control.reported.contains(&refusal) {
-                settled
-                    .messages
-                    .push(refusal.message(control.keys.hotkey()));
+                settled.messages.push(refusal.message(&control.keys));
                 control.reported.push(refusal);
             }
         }
@@ -317,7 +348,11 @@ pub struct Hook {
     thread: Option<JoinHandle<()>>,
 }
 impl Hook {
-    pub fn start(hotkey: Hotkey, sink: Sink) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn start(
+        hotkey: Hotkey,
+        listen: Hotkey,
+        sink: Sink,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let (conn, screen) = x11rb::connect(None)?;
         let root = conn.setup().roots[screen].root;
         let version = conn.xinput_xi_query_version(2, 2)?.reply()?;
@@ -367,7 +402,7 @@ impl Hook {
             wake,
             xtest,
             control: Mutex::new(Control {
-                keys: HotkeyMachine::new(hotkey),
+                keys: machine(hotkey, listen),
                 generation: 0,
                 wanted: Grabs::default(),
                 held: Held::default(),
@@ -397,12 +432,19 @@ impl Hook {
         report(&self.sink, settled);
         result
     }
-    pub fn set_hotkey(&self, key: Hotkey) {
+    pub fn set_hotkeys(&self, hotkey: Hotkey, listen: Hotkey) {
         self.with(|c| {
             // A new shortcut may conflict with a different app; say so again.
             c.reported.clear();
-            c.keys.set_hotkey(key);
+            let listen = listen_conflict(&hotkey, &listen)
+                .is_none()
+                .then_some(listen);
+            c.keys.set_hotkey(hotkey);
+            c.keys.set_listen(listen);
         });
+    }
+    pub fn set_listening(&self, listening: bool) {
+        self.with(|c| c.keys.set_listening(listening));
     }
     pub fn force_idle(&self) {
         self.with(|c| c.keys.force_idle());
@@ -566,6 +608,7 @@ mod tests {
             );
         }
     }
+    /// Dictation only, as before Listen existed.
     fn control(hotkey: &str) -> Control {
         Control {
             keys: HotkeyMachine::new(hotkey.parse().expect("hotkey")),
@@ -711,5 +754,48 @@ mod tests {
         c.keys.cancel_capture();
         settle(&server, &mut c);
         assert!(!c.held.keyboard && !*server.keyboard.borrow());
+    }
+
+    fn with_listen(hotkey: &str) -> Control {
+        Control {
+            keys: machine(hotkey.parse().expect("hotkey"), Hotkey::listen_default()),
+            ..control(hotkey)
+        }
+    }
+
+    #[test]
+    fn listen_key_is_grabbed_and_esc_claimed_only_while_listening() {
+        let server = FakeServer::default();
+        let mut c = with_listen("Ctrl+Win");
+        settle(&server, &mut c);
+        let f8 = code(0x77);
+        let ctrl_shift = ModMask::CONTROL | ModMask::SHIFT;
+        assert!(c.held.listen.contains(&(f8, ctrl_shift)));
+        assert_eq!(c.held.listen.len(), 4, "with and without Caps and Num Lock");
+        assert!(c.held.escape.is_empty(), "Esc stays with apps while idle");
+        c.keys.set_listening(true);
+        settle(&server, &mut c);
+        assert!(!c.held.escape.is_empty());
+        c.keys.set_listening(false);
+        settle(&server, &mut c);
+        assert!(c.held.escape.is_empty());
+        // A Listen shortcut that would start dictation first is not watched or grabbed.
+        let mut conflicting = with_listen("Ctrl+Shift");
+        let server = FakeServer::default();
+        settle(&server, &mut conflicting);
+        assert!(conflicting.keys.listen().is_none() && conflicting.held.listen.is_empty());
+    }
+
+    #[test]
+    fn a_listen_key_another_app_holds_is_reported() {
+        let ctrl_shift = ModMask::CONTROL | ModMask::SHIFT;
+        let server = FakeServer {
+            taken: vec![(code(0x77), ctrl_shift)],
+            ..FakeServer::default()
+        };
+        let mut c = with_listen("Ctrl+Win");
+        let settled = settle(&server, &mut c);
+        assert_eq!(settled.messages.len(), 1, "{settled:?}");
+        assert!(settled.messages[0].contains("F8"), "{:?}", settled.messages);
     }
 }

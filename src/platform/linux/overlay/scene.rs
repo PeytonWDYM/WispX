@@ -12,7 +12,12 @@ use std::time::{Duration, Instant};
 
 pub enum Mode {
     Idle,
-    Recording { levels: Levels, locked: bool },
+    /// `listening` marks Listen's capture rather than dictation.
+    Recording {
+        levels: Levels,
+        locked: bool,
+        listening: bool,
+    },
     Transcribing,
     Message,
 }
@@ -69,6 +74,7 @@ impl Scene {
                 self.mode = Mode::Recording {
                     levels,
                     locked: false,
+                    listening: false,
                 };
                 self.motion.morph(156.0, 38.0, 1.0, Ease::Back(0.45), now);
                 self.motion.bars.set(1.0, 160, Ease::Quadratic, 0, now);
@@ -89,6 +95,31 @@ impl Scene {
                 self.motion.lock.set(1.0, 180, Ease::Quadratic, 0, now);
                 self.motion.dot.set(1.0, 180, Ease::Quadratic, 0, now);
                 self.motion.pop(1.04, 160, now);
+            }
+            Pill::Listening(levels) => {
+                reposition = !matches!(
+                    self.mode,
+                    Mode::Recording {
+                        listening: true,
+                        ..
+                    }
+                );
+                self.mode = Mode::Recording {
+                    levels,
+                    locked: true,
+                    listening: true,
+                };
+                self.locked_at = now;
+                self.motion.morph(176.0, 38.0, 1.0, Ease::Back(0.45), now);
+                self.motion.bars.set(1.0, 160, Ease::Quadratic, 0, now);
+                self.motion.message.set(0.0, 100, Ease::Quadratic, 0, now);
+                self.motion.lock.set(1.0, 180, Ease::Quadratic, 0, now);
+                self.motion.dot.set(1.0, 180, Ease::Quadratic, 0, now);
+                self.motion.glow.set(0.0, 150, Ease::Quadratic, 0, now);
+                self.motion.shadow.set(0.5, 200, Ease::Quadratic, 0, now);
+                if reposition {
+                    self.motion.pop(1.06, 160, now);
+                }
             }
             Pill::Transcribing => {
                 self.mode = Mode::Transcribing;
@@ -191,7 +222,26 @@ mod tests {
         assert!(matches!(scene.mode, Mode::Idle));
         assert!(scene.show(Pill::Recording(Levels::default()), start, |_| 0.0));
         assert!(!scene.show(Pill::Locked, start, |_| 0.0));
-        assert!(matches!(scene.mode, Mode::Recording { locked: true, .. }));
+        assert!(matches!(
+            scene.mode,
+            Mode::Recording {
+                locked: true,
+                listening: false,
+                ..
+            }
+        ));
+        // Listen's pill is its own shape and mark, and refreshing it doesn't jump.
+        assert!(scene.show(Pill::Listening(Levels::default()), start, |_| 0.0));
+        assert!(matches!(
+            scene.mode,
+            Mode::Recording {
+                listening: true,
+                ..
+            }
+        ));
+        assert!(!scene.show(Pill::Listening(Levels::default()), start, |_| 0.0));
+        scene.show(Pill::Recording(Levels::default()), start, |_| 0.0);
+        scene.show(Pill::Locked, start, |_| 0.0);
         assert!(scene.advance(start + Duration::from_millis(16)));
         assert!(!scene.show(
             Pill::message("Hi", MessageKind::Warn, 1.0),

@@ -10,6 +10,7 @@ pub mod notify;
 pub mod overlay;
 pub mod paste;
 pub mod runtime;
+pub mod save;
 pub mod session;
 pub mod sound;
 pub mod tray;

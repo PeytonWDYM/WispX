@@ -40,6 +40,8 @@ const KEY_D: u32 = 0x64;
 const SPACE: u32 = 0x20;
 const RETURN: u32 = 0xff0d;
 const BACKSPACE: u32 = 0xff08;
+const SHIFT: u32 = 0xffe1;
+const F8: u32 = 0xffc5;
 const SECOND: Duration = Duration::from_secs(1);
 
 fn on_path(tool: &str) -> bool {
@@ -436,12 +438,19 @@ fn plasma_paste_and_shortcuts() {
     assert!(wait_for(SECOND * 5, || nested.clipboard() == "earlier clipboard"));
     let mut app = nested.role("app", None, &[]);
     app.expect("app-ready", SECOND * 20);
-    if app.wait("desktop Bound", SECOND * 6).is_none() {
-        // The desktop's first-bind confirmation; Return accepts it.
-        eprintln!("answering the shortcut dialog with Return");
-        driver.keys("tap", &[RETURN]);
-        app.expect("desktop Bound", SECOND * 20);
-    }
+    let status = match app.wait("desktop Bound", SECOND * 6) {
+        Some(status) => status,
+        None => {
+            // The desktop's first-bind confirmation; Return accepts it.
+            eprintln!("answering the shortcut dialog with Return");
+            driver.keys("tap", &[RETURN]);
+            app.expect("desktop Bound", SECOND * 20)
+        }
+    };
+    assert!(
+        !status.contains("listen: \"not assigned\""),
+        "the Listen shortcut is bound: {status}"
+    );
     app.expect(
         "paste RemoteDesktop portal with KWin focus checks",
         SECOND * 30,
@@ -496,8 +505,28 @@ fn plasma_paste_and_shortcuts() {
     // Cancel while hands-free: no delivery.
     driver.keys("tap", &[CONTROL, META, SPACE]);
     app.expect("event Start", SECOND * 5);
+    app.expect("event Lock", SECOND * 5);
     driver.keys("tap", &[CONTROL, META, BACKSPACE]);
     app.expect("event Cancel", SECOND * 5);
+
+    // Listen: one toggle per press, however long the keys are held; nothing on release.
+    driver.keys("tap", &[CONTROL, SHIFT, F8]);
+    app.expect("event ListenToggle", SECOND * 5);
+    driver.keys("down", &[CONTROL, SHIFT, F8]);
+    app.expect("event ListenToggle", SECOND * 5);
+    assert!(
+        app.wait("event ", Duration::from_millis(1500)).is_none(),
+        "a held Listen shortcut toggles once"
+    );
+    driver.keys("up", &[CONTROL, SHIFT, F8]);
+    assert!(app.wait("event ", Duration::from_millis(800)).is_none());
+    // While Listen records, the cancel shortcut discards it; otherwise it does nothing.
+    app.send("listening");
+    app.expect("listening", SECOND * 5);
+    driver.keys("tap", &[CONTROL, META, BACKSPACE]);
+    app.expect("event ListenCancel", SECOND * 5);
+    driver.keys("tap", &[CONTROL, META, BACKSPACE]);
+    assert!(app.wait("event ", Duration::from_millis(800)).is_none());
 
     // Two transcripts finishing together each land once, and the clipboard
     // from before both comes back.
@@ -745,9 +774,10 @@ mod roles {
             .unwrap_or_default();
         let (tx, hooks) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let _hotkeys = Hotkeys::start(
+        let hotkeys = Hotkeys::start(
             &session,
             hotkey,
+            Hotkey::listen_default(),
             Arc::new(move |message| {
                 let _ = tx.lock().unwrap().send(message);
             }),
@@ -801,6 +831,10 @@ mod roles {
             let (verb, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
             match verb {
                 "focused" => say(format!("focused {:?}", paster.focused())),
+                "listening" => {
+                    hotkeys.set_listening(true);
+                    say("listening");
+                }
                 "remember" => {
                     remembered = paster.focused();
                     say(format!("remembered {remembered:?}"));

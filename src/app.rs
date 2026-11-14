@@ -22,6 +22,8 @@ pub enum Pill {
     Idle,
     Recording(Levels),
     Locked,
+    /// Listen is capturing computer audio: shaped like hands-free, with a headphone mark.
+    Listening(Levels),
     Transcribing,
     Done,
     Message {

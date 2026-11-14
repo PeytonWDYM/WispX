@@ -132,6 +132,7 @@ pub fn style_options(window: &OptionsWindow) {
     glyphs.set_startup("↻".into());
     glyphs.set_context("¶".into());
     glyphs.set_dictionary("≡".into());
+    glyphs.set_listen("☊".into());
     window.set_startup_title("Start when you sign in".into());
     window.set_context_supported(false);
 }

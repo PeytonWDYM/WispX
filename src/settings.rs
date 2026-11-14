@@ -1,6 +1,6 @@
 //! Existing PascalCase settings and atomic persistence; the UI notifies its settings host.
-use crate::hotkey::Hotkey;
-use serde::{Deserialize, Serialize};
+use crate::hotkey::{self, Hotkey};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     fs::{self, OpenOptions},
     io::{self, Write},
@@ -22,6 +22,29 @@ pub struct Settings {
     pub cleanup: bool,
     pub cleanup_context: bool,
     pub dictionary: Vec<String>,
+    /// Toggles Listen. An unreadable value falls back alone, keeping other settings.
+    #[serde(deserialize_with = "listen_hotkey")]
+    pub listen_hotkey: Hotkey,
+    /// Platform output-capture ID; empty follows the system default output.
+    pub listen_output: String,
+    pub listen_include_microphone: bool,
+    /// Platform microphone ID for Listen; empty follows the system default input.
+    pub listen_microphone: String,
+}
+fn listen_hotkey<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Hotkey, D::Error> {
+    Ok(serde_json::Value::deserialize(deserializer)?
+        .as_str()
+        .and_then(|value| value.parse::<Hotkey>().ok())
+        .filter(|key| key.main_key().is_some())
+        .unwrap_or_else(Hotkey::listen_default))
+}
+impl Settings {
+    /// The Listen shortcut WispX watches for, unless pressing it would collide with dictation.
+    pub fn listen_shortcut(&self) -> Option<Hotkey> {
+        hotkey::listen_conflict(&self.hotkey, &self.listen_hotkey)
+            .is_none()
+            .then(|| self.listen_hotkey.clone())
+    }
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -36,6 +59,10 @@ impl Default for Settings {
             cleanup: true,
             cleanup_context: true,
             dictionary: Vec::new(),
+            listen_hotkey: Hotkey::listen_default(),
+            listen_output: String::new(),
+            listen_include_microphone: false,
+            listen_microphone: String::new(),
         }
     }
 }
@@ -118,4 +145,56 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    // Failure modes: settings written before Listen lose every value or fail to load;
+    // a broken Listen shortcut resets the dictation shortcut; a saved file drops the new
+    // fields; a conflicting Listen shortcut is still watched.
+    use super::*;
+
+    #[test]
+    fn older_settings_load_with_listen_defaults() {
+        let old =
+            r#"{"Sounds":false,"Hotkey":"Ctrl+Shift+D","Microphone":"USB","Dictionary":["WispX"]}"#;
+        let settings: Settings = serde_json::from_str(old).expect("old settings");
+        assert!(!settings.sounds);
+        assert_eq!(settings.hotkey.to_string(), "Ctrl + Shift + D");
+        assert_eq!(settings.microphone, "USB");
+        assert_eq!(settings.listen_hotkey, Hotkey::listen_default());
+        assert!(!settings.listen_include_microphone);
+        assert!(settings.listen_output.is_empty());
+    }
+
+    #[test]
+    fn a_bad_listen_shortcut_falls_back_alone() {
+        for value in [r#""Nonsense""#, r#""Ctrl+Shift""#, "42", "null"] {
+            let json = format!(r#"{{"Hotkey":"F9","ListenHotkey":{value}}}"#);
+            let settings: Settings = serde_json::from_str(&json).expect(&json);
+            assert_eq!(settings.hotkey.to_string(), "F9", "{value}");
+            assert_eq!(settings.listen_hotkey, Hotkey::listen_default(), "{value}");
+        }
+    }
+
+    #[test]
+    fn listen_settings_round_trip_and_conflicts_disable_the_shortcut() {
+        let mut settings = Settings {
+            listen_hotkey: "Ctrl+Alt+L".parse().expect("chord"),
+            listen_output: "monitor".into(),
+            listen_include_microphone: true,
+            listen_microphone: "mic".into(),
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).expect("serialize");
+        assert!(json.contains(r#""ListenHotkey":"Ctrl+Alt+L""#), "{json}");
+        let back: Settings = serde_json::from_str(&json).expect("parse");
+        assert_eq!(back.listen_hotkey, settings.listen_hotkey);
+        assert_eq!(back.listen_output, "monitor");
+        assert!(back.listen_include_microphone);
+        assert_eq!(back.listen_microphone, "mic");
+        assert!(settings.listen_shortcut().is_some());
+        settings.hotkey = "Ctrl+Alt".parse().expect("chord");
+        assert!(settings.listen_shortcut().is_none());
+    }
 }

@@ -2,6 +2,8 @@
 mod blur;
 mod chart;
 mod options;
+#[cfg(test)]
+mod tests;
 pub mod tour;
 slint::include_modules!();
-pub use options::{DesktopShortcut, Options, OptionsHost};
+pub use options::{DesktopShortcut, ListenAction, Options, OptionsHost};

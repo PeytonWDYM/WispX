@@ -1,0 +1,362 @@
+import { Button, ComboBox, Palette, Switch } from "std-widgets.slint";
+import { Card, CardHeader, Description, Glyphs } from "components.slint";
+
+export struct ListenLine { time: string, text: string, gap: bool }
+export struct ListenSource { label: string, device: string }
+export struct ListenTask { owner: string, task: string }
+
+component Badge inherits Rectangle {
+    in property <string> text;
+    border-radius: 9px;
+    background: Palette.alternate-background;
+    height: 18px;
+    width: label.preferred-width + 14px;
+    label := Text { text: root.text; font-size: 11px; font-weight: 600; color: Palette.alternate-foreground; horizontal-alignment: center; vertical-alignment: center; }
+}
+// Ten bars that light up with the level, like the microphone test meter.
+component Meter inherits Rectangle {
+    in property <float> level;
+    width: 57px;
+    height: 16px;
+    for i in 10: Rectangle {
+        x: i * 6px;
+        width: 3px;
+        height: 4px + 12px * min(1, max(0, root.level * 10 - i));
+        y: (parent.height - self.height) / 2;
+        border-radius: 1.5px;
+        background: i < ceil(root.level * 10) ? Palette.foreground : Palette.alternate-background;
+    }
+}
+// A leading mark or time beside wrapped text. Sized from the text's wrapped height,
+// which a HorizontalLayout row doesn't account for.
+component Row inherits Rectangle {
+    in property <string> lead;
+    in property <length> lead-width: 12px;
+    in property <length> lead-size: 14px;
+    in property <brush> lead-color: Palette.foreground;
+    in property <length> gap: 8px;
+    in property <string> text;
+    in property <brush> text-color: Palette.foreground;
+    height: max(mark.preferred-height, body.preferred-height);
+    mark := Text { x: 0; y: 0; width: root.lead-width; text: root.lead; font-size: root.lead-size; color: root.lead-color; }
+    body := Text { x: root.lead-width + root.gap; y: 0; width: root.width - self.x; text: root.text; wrap: word-wrap; color: root.text-color; }
+}
+// Wrapped body text whose height follows its laid-out width; nested conditional
+// layouts otherwise measure it too short and the card's contents overflow.
+component Paragraph inherits Text {
+    wrap: word-wrap;
+    color: Palette.foreground;
+    height: self.preferred-height;
+}
+component Label inherits Text { font-size: 12px; font-weight: 600; color: Palette.alternate-foreground; }
+// One tab of a tab list. Only the selected tab is in the Tab order; the arrow keys move
+// between tabs and select them, and Space or Enter select the focused one.
+component Tab inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    in property <int> index;
+    callback clicked;
+    callback previous;
+    callback next;
+    public function focus-tab() { scope.focus(); }
+    height: 34px;
+    width: label.preferred-width + 24px;
+    accessible-role: tab;
+    accessible-label: root.text;
+    accessible-item-index: root.index;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    label := Text { text: root.text; font-weight: root.selected ? 600 : 400; color: root.selected ? Palette.foreground : Palette.alternate-foreground; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; }
+    Rectangle { y: parent.height - 2px; height: 2px; background: root.selected ? Palette.foreground : transparent; }
+    if scope.has-focus: Rectangle { x: 2px; y: 3px; width: parent.width - 4px; height: parent.height - 8px; border-radius: 4px; border-width: 2px; border-color: Palette.accent-background; }
+    scope := FocusScope {
+        // Keyboard focus only, so a click doesn't leave a focus ring behind.
+        focus-on-click: false;
+        focus-on-tab-navigation: root.selected;
+        TouchArea { clicked => { root.clicked(); } }
+        key-pressed(event) => {
+            if (event.text == Key.LeftArrow) { root.previous(); return accept; }
+            if (event.text == Key.RightArrow) { root.next(); return accept; }
+            if (event.text == Key.Return || event.text == " ") { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+}
+
+// Setup, live listening, finishing steps and notes, in one page. Stage: 0 setup,
+// 1 listening, 2 finishing, 3 formatting, 4 summarizing, 5 notes.
+export component ListenPage inherits VerticalLayout {
+    in property <string> icon-font;
+    in property <int> stage;
+    in property <bool> signed-in;
+    in property <bool> notes-available;
+    in property <[string]> outputs;
+    in-out property <int> output;
+    in-out property <bool> include-microphone;
+    in property <[string]> microphones;
+    in-out property <int> microphone;
+    in property <string> shortcut;
+    in property <string> error;
+    in property <string> elapsed;
+    in property <[ListenSource]> sources;
+    in property <[float]> levels;
+    in property <[ListenLine]> lines;
+    in property <string> status;
+    in property <string> step;
+    in property <float> progress;
+    in property <string> title;
+    in property <string> details;
+    in property <string> saved;
+    in property <string> warning;
+    in property <int> summary-state;
+    in property <string> summary-error;
+    in property <string> tldr;
+    in property <string> coverage;
+    in property <[string]> decisions;
+    in property <[ListenTask]> tasks;
+    in property <string> transcript;
+    in property <string> transcript-note;
+    in property <string> raw;
+    in-out property <int> tab;
+    in-out property <bool> show-raw;
+    // Recreated with the page, so leaving it drops a pending confirmation.
+    private property <bool> confirming;
+    callback output-selected(int);
+    callback microphone-selected(int);
+    callback microphone-toggled;
+    callback start-listening;
+    callback stop-listening;
+    callback discard;
+    callback save;
+    callback copy;
+    callback new-session;
+    callback retry;
+    changed stage => { root.confirming = false; }
+    vertical-stretch: 0;
+    spacing: 12px;
+
+    if root.stage == 0: Description { text: "Turn meetings and videos into notes."; font-size: 14px; }
+    if root.stage == 1: HorizontalLayout {
+        alignment: start;
+        spacing: 8px;
+        Rectangle {
+            width: 8px;
+            Rectangle { width: 8px; height: 8px; y: (parent.height - self.height) / 2; border-radius: 4px; background: #60a5fa; }
+        }
+        Text { text: "Listening"; font-weight: 600; color: Palette.foreground; }
+        Text { text: "·"; color: Palette.alternate-foreground; }
+        Text { text: root.elapsed; color: Palette.foreground; }
+    }
+    if root.stage >= 2 && root.stage <= 4: HorizontalLayout {
+        alignment: start;
+        spacing: 8px;
+        Text { text: root.step; font-weight: 600; color: Palette.foreground; }
+        Text { text: "·"; color: Palette.alternate-foreground; }
+        Description { text: "Step " + (root.stage - 1) + " of 3"; vertical-alignment: center; }
+    }
+
+    if root.stage == 0: VerticalLayout {
+        spacing: 12px;
+        if !root.signed-in: Description { text: "Sign in to the Codex app first."; color: #b88922; }
+        if root.signed-in && !root.notes-available: Description { text: "Formatting and summaries need Codex signed in with ChatGPT. You'll still get the transcript."; color: #b88922; }
+        Card {
+            CardHeader { icon-font: root.icon-font; glyph: Glyphs.listen; title: "Computer audio"; detail: "Captures everything playing on this output, including other apps."; }
+            Label { text: "Audio output"; }
+            ComboBox { model: root.outputs; current-index <=> root.output; selected(_) => { root.output-selected(self.current-index); } }
+        }
+        Card {
+            HorizontalLayout {
+                spacing: 16px;
+                Text { text: Glyphs.audio; width: 20px; font-family: root.icon-font; font-size: 20px; color: Palette.foreground; vertical-alignment: center; }
+                VerticalLayout {
+                    spacing: 5px;
+                    Text { text: "Include my microphone"; font-size: 15px; font-weight: 600; color: Palette.foreground; }
+                    Description { text: "Add your side of the conversation to the notes."; }
+                }
+                Switch { checked <=> root.include-microphone; text: self.checked ? "On" : "Off"; toggled => { root.microphone-toggled(); } }
+            }
+            if root.include-microphone: VerticalLayout {
+                spacing: 8px;
+                Label { text: "Microphone"; }
+                ComboBox { model: root.microphones; current-index <=> root.microphone; selected(_) => { root.microphone-selected(self.current-index); } }
+                Description { text: "ⓘ Wear headphones so the call isn't picked up twice. WispX doesn't cancel echo."; }
+            }
+        }
+        Description { text: "ⓘ Audio is sent to the cloud (ChatGPT) for transcription. The transcript text is sent for formatting and the summary. Nothing is saved until you save it."; }
+        if root.error != "": Description { text: root.error; color: #b88922; }
+        HorizontalLayout {
+            Button { text: "Start listening"; primary: true; enabled: root.signed-in; horizontal-stretch: 0; clicked => { root.start-listening(); } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        Description { text: "Transcribes as you listen and formats the transcript when you finish." + (root.shortcut != "" ? " Shortcut: " + root.shortcut + "." : ""); }
+    }
+
+    if root.stage >= 1 && root.stage <= 4: VerticalLayout {
+        spacing: 12px;
+        Card {
+            for source[index] in root.sources: VerticalLayout {
+                spacing: 8px;
+                if index > 0: Rectangle { height: 1px; background: Palette.border; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        spacing: 3px;
+                        Text { text: source.label; font-weight: 600; color: Palette.foreground; }
+                        Description { text: source.device; }
+                    }
+                    if root.stage == 1: Rectangle {
+                        width: 57px;
+                        Meter { level: root.levels[index]; y: (parent.height - self.height) / 2; }
+                    }
+                }
+            }
+            Description { text: "Other apps keep playing at their normal volume."; }
+        }
+        Card {
+            HorizontalLayout {
+                alignment: start;
+                spacing: 8px;
+                Text { text: "Transcript so far"; font-size: 15px; font-weight: 600; color: Palette.foreground; vertical-alignment: center; }
+                Rectangle {
+                    width: draft.width;
+                    draft := Badge { text: "Draft"; y: (parent.height - self.height) / 2; }
+                }
+            }
+            Description { text: "Rough while you listen. Formatted when you finish."; }
+            if root.lines.length == 0: Description { text: root.stage == 1 ? "Waiting for speech…" : "No speech yet."; font-size: 14px; }
+            for line in root.lines: Row {
+                lead: line.time; lead-width: 60px; lead-size: 12px; lead-color: Palette.alternate-foreground; gap: 12px;
+                text: line.text; text-color: line.gap ? #b88922 : Palette.foreground;
+            }
+            if root.stage >= 2: VerticalLayout {
+                spacing: 8px;
+                Rectangle {
+                    height: 4px; border-radius: 2px; background: Palette.alternate-background;
+                    Rectangle { x: 0; width: parent.width * max(0.03, min(1, root.progress)); border-radius: 2px; background: Palette.foreground; animate width { duration: 250ms; } }
+                }
+                Description {
+                    text: root.stage == 2 ? "Waiting for the last parts to come back."
+                        : root.stage == 3 ? "Fixing punctuation, paragraphs, and names."
+                        : "Pulling out decisions and action items.";
+                }
+            }
+        }
+        if root.status != "": Description { text: root.status; color: #b88922; }
+        if root.stage == 1: Rectangle {
+            border-width: 1px; border-color: Palette.border; border-radius: 8px;
+            VerticalLayout {
+                padding: 14px;
+                Description { text: "You can go back to your call. The pill shows WispX is still listening" + (root.shortcut != "" ? ", and " + root.shortcut + " stops it." : "."); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            if !root.confirming: Button { text: "Stop & summarize"; primary: true; enabled: root.stage == 1; clicked => { root.stop-listening(); } }
+            if !root.confirming: Button { text: "Discard"; clicked => { root.confirming = true; } }
+            if root.confirming: Description { text: "Discard this session? Nothing is kept."; vertical-alignment: center; }
+            // Focus moves to the safe choice, since the button that asked is gone.
+            if root.confirming: Button { text: "Keep listening"; init => { self.focus(); } clicked => { root.confirming = false; } }
+            if root.confirming: Button { text: "Discard"; primary: true; clicked => { root.confirming = false; root.discard(); } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+
+    if root.stage == 5: VerticalLayout {
+        spacing: 12px;
+        Card {
+            HorizontalLayout {
+                alignment: start;
+                spacing: 10px;
+                Text { text: root.title; font-size: 20px; font-weight: 600; color: Palette.foreground; overflow: elide; vertical-alignment: center; }
+                Rectangle {
+                    width: badge.width;
+                    badge := Badge { text: root.saved == "" ? "Unsaved" : "Saved"; y: (parent.height - self.height) / 2; }
+                }
+            }
+            Description { text: root.details; }
+            if root.warning != "": Description { text: root.warning; color: #b88922; }
+            HorizontalLayout {
+                alignment: start;
+                accessible-role: tab-list;
+                accessible-label: "Notes";
+                accessible-item-count: 2;
+                summary-tab := Tab {
+                    text: "Summary"; index: 0; selected: root.tab == 0;
+                    clicked => { root.tab = 0; }
+                    next => { root.tab = 1; transcript-tab.focus-tab(); }
+                }
+                transcript-tab := Tab {
+                    text: "Transcript"; index: 1; selected: root.tab == 1;
+                    clicked => { root.tab = 1; }
+                    previous => { root.tab = 0; summary-tab.focus-tab(); }
+                }
+            }
+            Rectangle { height: 1px; background: Palette.border; }
+            if root.tab == 0 && root.summary-state == 0: Description { text: "Writing summary…"; font-size: 14px; }
+            if root.tab == 0 && root.summary-state == 1: VerticalLayout {
+                spacing: 8px;
+                Label { text: "TL;DR"; }
+                Paragraph { text: root.tldr; }
+                if root.coverage != "": Description { text: root.coverage; }
+                if root.decisions.length > 0: Label { text: "Decisions"; }
+                for decision in root.decisions: Row { lead: "•"; text: decision; }
+                if root.tasks.length > 0: Label { text: "Action items"; }
+                for task in root.tasks: Row { lead: "☐"; text: (task.owner != "" ? task.owner + " — " : "") + task.task; }
+                if root.decisions.length == 0 && root.tasks.length == 0: Description { text: "No decisions or action items were mentioned."; }
+            }
+            if root.tab == 0 && root.summary-state == 2: Rectangle {
+                background: Palette.background; border-radius: 6px; border-width: 1px; border-color: Palette.border;
+                VerticalLayout {
+                    padding: 16px; spacing: 10px;
+                    Text { text: "Couldn't write a summary."; font-weight: 600; color: Palette.foreground; }
+                    Description { text: root.summary-error + ". Your transcript is kept and can still be copied or saved."; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button { text: "Try again"; clicked => { root.retry(); } }
+                        Button { text: "View transcript"; clicked => { root.tab = 1; } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                }
+            }
+            if root.tab == 0 && root.summary-state == 3: Description { text: "No speech was heard, so there's nothing to summarize."; font-size: 14px; }
+            if root.tab == 0 && root.summary-state == 4: VerticalLayout {
+                spacing: 8px;
+                Label { text: "No transcript could be recovered"; }
+                Paragraph { text: root.summary-error; }
+                Description { text: "Start a new session to try again. The transcript shows any missing parts."; }
+            }
+            if root.tab == 1: VerticalLayout {
+                spacing: 8px;
+                if root.transcript-note != "": Description { text: root.transcript-note; color: #b88922; }
+                Description { text: root.show-raw ? "Original transcript, exactly as it came back." : "Punctuation, paragraphs, and names cleaned up. Nothing added."; }
+                Paragraph { text: root.show-raw ? root.raw : root.transcript; }
+                HorizontalLayout {
+                    Button { text: root.show-raw ? "Show formatted" : "Show original"; enabled: root.raw != root.transcript; clicked => { root.show-raw = !root.show-raw; } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+        if root.saved != "": Description { text: "Saved to " + root.saved; }
+        if root.error != "": Description { text: root.error; color: #b88922; }
+        HorizontalLayout {
+            spacing: 8px;
+            if !root.confirming: Button { text: "Save notes"; primary: true; clicked => { root.save(); } }
+            if !root.confirming: Button {
+                text: root.tab == 0 ? "Copy summary" : "Copy transcript";
+                enabled: root.tab == 1 || root.summary-state == 1;
+                clicked => { root.copy(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.confirming: Description { text: "Close these notes? They aren't saved."; vertical-alignment: center; }
+            if root.confirming: Button { text: "Keep them"; init => { self.focus(); } clicked => { root.confirming = false; } }
+            if root.confirming: Button { text: "Close notes"; primary: true; clicked => { root.confirming = false; root.new-session(); } }
+            if !root.confirming: Button {
+                text: "New session";
+                clicked => {
+                    if (root.saved == "" && root.summary-state != 3 && root.summary-state != 4) { root.confirming = true; } else { root.new-session(); }
+                }
+            }
+        }
+    }
+}
