@@ -85,7 +85,7 @@ export component OptionsWindow inherits Window {
     in-out property <bool> idle-pill;
     in-out property <bool> startup;
     in property <bool> cleanup-available;
-    in property <bool> context-supported: true;
+    in property <string> context-detail: "Send up to 2,000 characters around your cursor so punctuation and wording flow. Never from password fields.";
     in property <string> startup-title: "Start with Windows";
     // Hosts whose desktop owns global shortcuts show its binding instead of capturing one.
     in property <bool> shortcut-capture: true;
@@ -277,7 +277,7 @@ export component OptionsWindow inherits Window {
                     if root.page == 3: CleanupPage {
                         icon-font: root.icon-font;
                         available: root.cleanup-available;
-                        context-supported: root.context-supported;
+                        context-detail: root.context-detail;
                         cleanup <=> root.cleanup;
                         context <=> root.cleanup-context;
                         dictionary: root.dictionary;

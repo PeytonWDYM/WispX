@@ -171,8 +171,7 @@ impl Options {
             window.set_sounds(settings.sounds);
             window.set_lower_audio(settings.lower_audio);
             window.set_cleanup(settings.cleanup);
-            // Unsupported hosts show it off without changing the saved choice.
-            window.set_cleanup_context(settings.cleanup_context && window.get_context_supported());
+            window.set_cleanup_context(settings.cleanup_context);
             window.set_dictionary(strings(settings.dictionary.clone()));
             window.set_dictionary_limit(MAX_DICTIONARY_ENTRIES as i32);
             window.set_version(env!("CARGO_PKG_VERSION").into());

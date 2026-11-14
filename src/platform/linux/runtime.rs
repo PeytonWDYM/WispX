@@ -1,7 +1,7 @@
 //! UI-thread application host, structured like the Windows runtime. Worker results
 //! always return through Slint's event loop.
 use super::{
-    desktop,
+    context, desktop,
     hotkey::{DesktopStatus, HookMessage, Hotkeys},
     instance::InstanceEvent,
     overlay::Overlay,
@@ -576,8 +576,6 @@ impl Runtime {
                     .start(&self.store.borrow().value);
                 match result {
                     Ok(Some(pill)) => {
-                        // Linux has no accessibility reader for nearby text yet; cleanup
-                        // runs without context rather than guessing at it.
                         self.show(pill);
                         self.cue(Cue::Start);
                         let weak = Rc::downgrade(self);
@@ -648,9 +646,20 @@ impl Runtime {
                 // The window focused as dictation ends is the only paste target.
                 // Asking can take KWin a moment, so it runs beside the recorder
                 // stopping rather than before it; no answer means copy only.
+                // Nearby text comes from that same window's process, read while
+                // the recording uploads.
                 let focus = {
                     let paster = paster.clone();
-                    std::thread::spawn(move || paster.focused())
+                    let wanted = context::wanted(&settings, auth::login().map(|l| l.mode));
+                    std::thread::spawn(move || {
+                        let target = paster.focused();
+                        let context = target
+                            .as_ref()
+                            .and_then(|target| target.pid)
+                            .filter(|_| wanted)
+                            .and_then(context::begin);
+                        (target, context)
+                    })
                 };
                 std::thread::spawn(move || {
                     let result = (|| {
@@ -664,8 +673,17 @@ impl Runtime {
                             )?
                             .trim()
                             .to_owned();
-                        let text = client.cleanup(text, settings.cleanup, "", &settings.dictionary);
-                        let target = focus.join().ok().flatten();
+                        let (target, context) = focus.join().unwrap_or((None, None));
+                        let surrounding = context
+                            .and_then(context::Capture::finish)
+                            .unwrap_or_default();
+                        let text = client.cleanup(
+                            text,
+                            settings.cleanup,
+                            &surrounding,
+                            &settings.dictionary,
+                        );
+                        let text = crate::transcribe::cleanup::join_context(text, &surrounding);
                         let delivery = if text.is_empty() {
                             Delivery::Copied
                         } else {

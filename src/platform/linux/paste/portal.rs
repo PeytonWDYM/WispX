@@ -237,6 +237,7 @@ fn kwin_focus() -> Option<Target> {
     kwin::active_window().ok().flatten().map(|w| Target {
         id: w.id,
         class: w.class,
+        pid: w.pid,
     })
 }
 impl PortalKeys {

@@ -4,7 +4,7 @@ import { Card, CardHeader, Description, Glyphs, ToggleCard } from "components.sl
 export component CleanupPage inherits VerticalLayout {
     in property <string> icon-font;
     in property <bool> available;
-    in property <bool> context-supported: true;
+    in property <string> context-detail;
     in-out property <bool> cleanup;
     in-out property <bool> context;
     in property <[string]> dictionary;
@@ -29,10 +29,8 @@ export component CleanupPage inherits VerticalLayout {
     ToggleCard {
         icon-font: root.icon-font; glyph: Glyphs.context;
         title: "Use nearby text";
-        detail: root.context-supported
-            ? "Send up to 2,000 characters around your cursor so punctuation and wording flow. Never from password fields."
-            : "Not available on this desktop yet. Cleanup works without nearby text.";
-        checked <=> root.context; enabled: root.available && root.cleanup && root.context-supported;
+        detail: root.context-detail;
+        checked <=> root.context; enabled: root.available && root.cleanup;
         toggled => { root.context-changed(); }
     }
     Card {

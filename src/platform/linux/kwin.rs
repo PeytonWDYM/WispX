@@ -21,13 +21,14 @@ pub struct Window {
     /// KWin's per-window UUID, unlike titles or classes unique to each window.
     pub id: String,
     pub class: String,
+    pub pid: Option<u32>,
 }
 
 fn script(unique_name: &str) -> String {
     format!(
         "const w = workspace.activeWindow !== undefined ? workspace.activeWindow : workspace.activeClient;\n\
          callDBus(\"{unique_name}\", \"{REPORT_PATH}\", \"{REPORT_INTERFACE}\", \"Report\", \
-         w ? String(w.internalId) : \"\", w ? String(w.resourceClass) : \"\");\n"
+         w ? String(w.internalId) : \"\", w ? String(w.resourceClass) : \"\", w ? String(w.pid) : \"\");\n"
     )
 }
 
@@ -103,8 +104,10 @@ async fn query() -> Result<Option<Window>, Box<dyn std::error::Error>> {
                 && header.member().is_some_and(|m| m.as_str() == "Report")
                 && header.path().is_some_and(|p| p.as_str() == REPORT_PATH)
             {
-                let (id, class): (String, String) = message.body().deserialize()?;
-                return Ok((!id.is_empty()).then_some(Window { id, class }));
+                let (id, class, pid): (String, String, String) = message.body().deserialize()?;
+                // KWin reports 0 or -1 when it doesn't know the process.
+                let pid = pid.parse().ok().filter(|&pid| pid > 0);
+                return Ok((!id.is_empty()).then_some(Window { id, class, pid }));
             }
         }
         Err::<_, Box<dyn std::error::Error>>("D-Bus connection closed".into())
@@ -139,6 +142,7 @@ mod tests {
             "callDBus(\":1.42\", \"{REPORT_PATH}\", \"{REPORT_INTERFACE}\", \"Report\","
         )));
         assert!(source.contains("w ? String(w.internalId) : \"\""));
+        assert!(source.contains("w ? String(w.pid) : \"\""));
         assert!(source.contains("workspace.activeClient"));
     }
 }

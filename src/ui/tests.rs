@@ -239,6 +239,22 @@ fn listen_is_usable_from_the_keyboard() {
     activate(&ui, &actions, Action::ListenNew, 8);
 }
 
+fn snapshot(ui: &OptionsWindow, path: &Path) {
+    settle();
+    let pixels = ui.window().take_snapshot().expect("snapshot");
+    let mut encoder = png::Encoder::new(
+        std::fs::File::create(path).expect("file"),
+        pixels.width(),
+        pixels.height(),
+    );
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .and_then(|mut w| w.write_image_data(pixels.as_bytes()))
+        .expect("png");
+}
+
 /// Renders every Listen state for review:
 ///
 ///     WISPX_LISTEN_SHOTS=artifacts/listen-shots cargo test --lib ui::tests -- --ignored
@@ -256,20 +272,10 @@ fn listen_screenshots() {
             let (ui, _) = options(width, height);
             ui.global::<Palette>().set_color_scheme(scheme);
             let shot = |state: &str| {
-                settle();
-                let pixels = ui.window().take_snapshot().expect("snapshot");
-                let path = dir.join(format!("{name}-{width}x{height}-{state}.png"));
-                let mut encoder = png::Encoder::new(
-                    std::fs::File::create(&path).expect("file"),
-                    pixels.width(),
-                    pixels.height(),
+                snapshot(
+                    &ui,
+                    &dir.join(format!("{name}-{width}x{height}-{state}.png")),
                 );
-                encoder.set_color(png::ColorType::Rgba);
-                encoder.set_depth(png::BitDepth::Eight);
-                encoder
-                    .write_header()
-                    .and_then(|mut w| w.write_image_data(pixels.as_bytes()))
-                    .expect("png");
             };
             stage(&ui, 0);
             shot("1-setup");
@@ -309,5 +315,30 @@ fn listen_screenshots() {
             ui.invoke_focus_page();
             shot("11-no-transcript");
         }
+    }
+}
+
+/// Renders the Cleanup page as this desktop shows it, with the saved defaults:
+///
+///     WISPX_CLEANUP_SHOTS=artifacts/cleanup-shots cargo test --lib ui::tests::cleanup -- --ignored
+#[test]
+#[ignore = "writes screenshots to WISPX_CLEANUP_SHOTS"]
+fn cleanup_screenshots() {
+    let dir = std::env::var_os("WISPX_CLEANUP_SHOTS").expect("WISPX_CLEANUP_SHOTS");
+    let dir = Path::new(&dir);
+    std::fs::create_dir_all(dir).expect("directory");
+    let settings = crate::settings::Settings::default();
+    for (scheme, name) in [
+        (slint::language::ColorScheme::Dark, "dark"),
+        (slint::language::ColorScheme::Light, "light"),
+    ] {
+        let (ui, _) = options(820, 560);
+        ui.global::<Palette>().set_color_scheme(scheme);
+        ui.set_page(3);
+        ui.set_cleanup(settings.cleanup);
+        ui.set_cleanup_context(settings.cleanup_context);
+        ui.set_dictionary(strings(&["WispX", "src/platform/linux/context.rs"]));
+        ui.set_dictionary_limit(crate::transcribe::cleanup::MAX_DICTIONARY_ENTRIES as i32);
+        snapshot(&ui, &dir.join(format!("cleanup-{name}.png")));
     }
 }
