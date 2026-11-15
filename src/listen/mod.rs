@@ -769,14 +769,17 @@ mod tests {
             Err("offline".into())
         }
     }
-    /// Holds each request until the test lets it finish, then reports whether the
-    /// session was cancelled meanwhile, as a request in flight during Discard would.
+    /// Reports each request as it starts, holds it until the test lets it finish, then
+    /// reports whether the session was cancelled meanwhile, as a request in flight
+    /// during Discard would.
     struct Gated {
+        entered: Mutex<mpsc::Sender<&'static str>>,
         gate: Mutex<mpsc::Receiver<()>>,
         seen: Mutex<mpsc::Sender<(&'static str, bool)>>,
     }
     impl Gated {
         fn wait(&self, call: &'static str, cancel: &Cancel) {
+            let _ = self.entered.lock().unwrap().send(call);
             self.gate.lock().unwrap().recv().unwrap();
             let _ = self.seen.lock().unwrap().send((call, cancel.cancelled()));
         }
@@ -817,22 +820,41 @@ mod tests {
     fn listen() -> (Listen, Posted) {
         listen_with(Arc::new(Offline))
     }
-    /// A Listen whose requests wait on `gate`, and a report of each request finishing.
-    fn gated() -> (
-        Listen,
-        Posted,
-        mpsc::Sender<()>,
-        mpsc::Receiver<(&'static str, bool)>,
-    ) {
+    /// A Listen whose requests wait on `gate`.
+    struct Gates {
+        /// Each request as it starts waiting.
+        entered: mpsc::Receiver<&'static str>,
+        gate: mpsc::Sender<()>,
+        /// Each request as it finishes, and whether it saw the cancel.
+        seen: mpsc::Receiver<(&'static str, bool)>,
+    }
+    impl Gates {
+        /// Waits until `call` is in flight, so a cancel that follows lands mid-request.
+        fn entered(&self, call: &'static str) {
+            assert_eq!(self.entered.recv_timeout(WAIT).unwrap(), call);
+        }
+    }
+    fn gated() -> (Listen, Posted, Gates) {
+        let (entered_tx, entered) = mpsc::channel();
         let (gate, gate_rx) = mpsc::channel();
         let (seen_tx, seen) = mpsc::channel();
         let (l, posted) = listen_with(Arc::new(Gated {
+            entered: Mutex::new(entered_tx),
             gate: Mutex::new(gate_rx),
             seen: Mutex::new(seen_tx),
         }));
-        (l, posted, gate, seen)
+        (
+            l,
+            posted,
+            Gates {
+                entered,
+                gate,
+                seen,
+            },
+        )
     }
-    const WAIT: Duration = Duration::from_secs(5);
+    /// Bounds waits for the notes threads only to fail a hung test.
+    const WAIT: Duration = Duration::from_secs(60);
     const QUIET: Duration = Duration::from_millis(300);
     /// Records a session up to notes being written, for one spoken chunk.
     fn finished(l: &mut Listen) {
@@ -1097,7 +1119,7 @@ mod tests {
         ended(&mut l, 1, None);
         assert_eq!(l.stage(), Stage::Formatting);
         let mut stages = Vec::new();
-        while let Ok((generation, update)) = posted.recv_timeout(Duration::from_secs(5)) {
+        while let Ok((generation, update)) = posted.recv_timeout(WAIT) {
             let last = matches!(update, Update::Summary(_));
             l.update(generation, update);
             stages.push(l.stage());
@@ -1116,7 +1138,7 @@ mod tests {
         l.retry_summary();
         assert_eq!(l.stage(), Stage::Notes);
         assert_eq!(l.notes().unwrap().summary, SummaryState::Pending);
-        let (generation, update) = posted.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (generation, update) = posted.recv_timeout(WAIT).unwrap();
         l.update(generation, update);
         assert_eq!(l.stage(), Stage::Notes);
         l.retry_summary();
@@ -1130,28 +1152,34 @@ mod tests {
 
     #[test]
     fn discard_while_formatting_sends_no_summary_and_posts_nothing() {
-        let (mut l, posted, gate, seen) = gated();
+        let (mut l, posted, gates) = gated();
         finished(&mut l);
+        gates.entered("format");
         assert!(l.discard());
-        gate.send(()).unwrap();
+        gates.gate.send(()).unwrap();
         // The request in flight finishes, sees the cancel, and nothing follows it.
-        assert_eq!(seen.recv_timeout(WAIT).unwrap(), ("format", true));
-        assert!(seen.recv_timeout(QUIET).is_err(), "no summary request");
+        assert_eq!(gates.seen.recv_timeout(WAIT).unwrap(), ("format", true));
+        assert!(
+            gates.entered.recv_timeout(QUIET).is_err(),
+            "no summary request"
+        );
         assert!(posted.recv_timeout(QUIET).is_err(), "nothing published");
     }
 
     #[test]
     fn discard_while_summarizing_posts_nothing() {
-        let (mut l, posted, gate, seen) = gated();
+        let (mut l, posted, gates) = gated();
         finished(&mut l);
-        gate.send(()).unwrap();
-        assert_eq!(seen.recv_timeout(WAIT).unwrap(), ("format", false));
+        gates.entered("format");
+        gates.gate.send(()).unwrap();
+        assert_eq!(gates.seen.recv_timeout(WAIT).unwrap(), ("format", false));
         let (generation, update) = posted.recv_timeout(WAIT).unwrap();
         l.update(generation, update);
         assert_eq!(l.stage(), Stage::Summarizing);
+        gates.entered("summarize");
         assert!(l.discard());
-        gate.send(()).unwrap();
-        assert_eq!(seen.recv_timeout(WAIT).unwrap(), ("summarize", true));
+        gates.gate.send(()).unwrap();
+        assert_eq!(gates.seen.recv_timeout(WAIT).unwrap(), ("summarize", true));
         assert!(posted.recv_timeout(QUIET).is_err());
         assert_eq!(l.stage(), Stage::Setup);
     }
@@ -1159,11 +1187,12 @@ mod tests {
     #[test]
     fn closing_or_quitting_cancels_a_retried_summary() {
         for quit in [false, true] {
-            let (mut l, posted, gate, seen) = gated();
+            let (mut l, posted, gates) = gated();
             finished(&mut l);
-            for _ in 0..2 {
-                gate.send(()).unwrap();
-                seen.recv_timeout(WAIT).unwrap();
+            for call in ["format", "summarize"] {
+                gates.entered(call);
+                gates.gate.send(()).unwrap();
+                gates.seen.recv_timeout(WAIT).unwrap();
                 let (generation, update) = posted.recv_timeout(WAIT).unwrap();
                 l.update(generation, update);
             }
@@ -1172,22 +1201,24 @@ mod tests {
                 SummaryState::Failed("offline".into())
             );
             l.retry_summary();
+            gates.entered("summarize");
             if quit {
                 l.shutdown();
             } else {
                 l.close_notes();
             }
-            gate.send(()).unwrap();
-            assert_eq!(seen.recv_timeout(WAIT).unwrap(), ("summarize", true));
+            gates.gate.send(()).unwrap();
+            assert_eq!(gates.seen.recv_timeout(WAIT).unwrap(), ("summarize", true));
             assert!(posted.recv_timeout(QUIET).is_err());
             assert!(l.notes().is_none());
         }
         // Replacing the whole state, as a new session does, cancels too.
-        let (mut l, posted, gate, seen) = gated();
+        let (mut l, posted, gates) = gated();
         finished(&mut l);
+        gates.entered("format");
         drop(std::mem::replace(&mut l, listen().0));
-        gate.send(()).unwrap();
-        assert_eq!(seen.recv_timeout(WAIT).unwrap(), ("format", true));
+        gates.gate.send(()).unwrap();
+        assert_eq!(gates.seen.recv_timeout(WAIT).unwrap(), ("format", true));
         assert!(posted.recv_timeout(QUIET).is_err());
     }
 

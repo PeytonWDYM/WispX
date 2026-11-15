@@ -450,6 +450,8 @@ mod tests {
             rx,
         )
     }
+    /// Bounds a wait on the session's threads only to fail a hung test.
+    const HANG: Duration = Duration::from_secs(60);
     fn speech(seconds: usize) -> Vec<i16> {
         (0..seconds * 16_000)
             .map(|i| ((i as f32 * 0.07).sin() * 8000.0) as i16)
@@ -466,13 +468,16 @@ mod tests {
             sink,
             Duration::ZERO,
         );
-        // Faster than real time, in bursts the capture's bounded queue accepts.
+        // Faster than real time, in bursts the capture's bounded queue accepts. Encoding
+        // is slow in debug builds on a busy machine, so each burst waits for the last to
+        // be taken, bounded only to fail a hung test.
         for burst in [speech(30), vec![0; 8000], speech(12)]
             .concat()
             .chunks(160_000)
         {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while feed.queued() > 16_000 && Instant::now() < deadline {
+            let deadline = Instant::now() + HANG;
+            while feed.queued() > 16_000 {
+                assert!(Instant::now() < deadline, "capture stopped taking audio");
                 thread::sleep(Duration::from_millis(20));
             }
             feed.push(burst);
@@ -480,20 +485,23 @@ mod tests {
         session.stop();
         let mut chunks = Vec::new();
         let mut ended = None;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while ended.is_none_or(|total| chunks.len() < total as usize) && Instant::now() < deadline {
-            match events.recv_timeout(Duration::from_millis(200)) {
-                Ok(Event::Chunk(part, outcome)) => chunks.push((part.index, outcome)),
-                Ok(Event::Ended {
+        while ended.is_none_or(|total| chunks.len() < total as usize) {
+            // Every thread holds the sink, so this also fails once they have all exited.
+            match events
+                .recv_timeout(HANG)
+                .expect("session posted every result")
+            {
+                Event::Chunk(part, outcome) => chunks.push((part.index, outcome)),
+                Event::Ended {
                     chunks: total,
                     duration_ms,
                     failure,
-                }) => {
+                } => {
                     assert_eq!(failure, None);
                     assert_eq!(duration_ms, 42_500);
                     ended = Some(total);
                 }
-                _ => {}
+                Event::Backlog(_) => {}
             }
         }
         assert_eq!(ended, Some(2));
@@ -547,7 +555,7 @@ mod tests {
         feed.fail("device removed");
         let (sink, events) = collect();
         let _session = Session::run(capture, Arc::new(script(vec![])), sink, Duration::ZERO);
-        let ended = std::iter::from_fn(|| events.recv_timeout(Duration::from_secs(5)).ok())
+        let ended = std::iter::from_fn(|| events.recv_timeout(HANG).ok())
             .find(|e| matches!(e, Event::Ended { .. }));
         assert!(
             matches!(ended, Some(Event::Ended { failure: Some(f), .. }) if f.contains("device removed"))

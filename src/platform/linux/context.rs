@@ -4,8 +4,9 @@
 //! The paste target names a process. The accessibility bus reports each
 //! application's process from the bus daemon's own credentials, so text is read
 //! only from that application, inside its one active window. Every node on the way
-//! to the field must report a role and none may be a password field; that, and the
-//! field's states and Text interface, are checked before any text is requested.
+//! to the field must report a role and none may be a password field or terminal;
+//! that, and the field's states and Text interface, are checked before any text is
+//! requested.
 //! Only the characters around the caret are read; selection, caret and clipboard
 //! stay untouched. Anything uncertain yields no context, never a guess.
 mod atspi;
@@ -191,12 +192,11 @@ async fn read(tree: &impl Tree, pid: u32) -> Option<String> {
     let path = focused_path(tree, window).await?;
     let field = path.last()?;
     for node in &path {
-        if tree.role(node).await? == ROLE_PASSWORD_TEXT {
+        if matches!(tree.role(node).await?, ROLE_PASSWORD_TEXT | ROLE_TERMINAL) {
             return None;
         }
     }
-    if tree.role(field).await? == ROLE_TERMINAL
-        || !tree.states(field).await?.editable_field()
+    if !tree.states(field).await?.editable_field()
         || !tree.interfaces(field).await?.iter().any(|i| i == TEXT)
     {
         return None;
@@ -523,6 +523,10 @@ mod tests {
             (
                 "terminal",
                 Fake::new(field("secret", 3)).with("field", |f| f.role = Some(ROLE_TERMINAL)),
+            ),
+            (
+                "inside a terminal",
+                Fake::new(field("secret", 3)).with("panel", |f| f.role = Some(ROLE_TERMINAL)),
             ),
             (
                 "not editable",

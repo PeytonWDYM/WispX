@@ -5,7 +5,7 @@ use super::{
     hotkey::{DesktopStatus, HookMessage, Hotkeys},
     instance::InstanceEvent,
     overlay::Overlay,
-    paste::Paster,
+    paste::{Paster, Target},
     save,
     session::{Protocol, Session},
     sound,
@@ -646,19 +646,21 @@ impl Runtime {
                 // The window focused as dictation ends is the only paste target.
                 // Asking can take KWin a moment, so it runs beside the recorder
                 // stopping rather than before it; no answer means copy only.
-                // Nearby text comes from that same window's process, read while
-                // the recording uploads.
+                // Nearby text comes from that same window, read while the
+                // recording uploads.
                 let focus = {
                     let paster = paster.clone();
                     let wanted = context::wanted(&settings, auth::login().map(|l| l.mode));
                     std::thread::spawn(move || {
                         let target = paster.focused();
-                        let context = target
-                            .as_ref()
-                            .and_then(|target| target.pid)
-                            .filter(|_| wanted)
-                            .and_then(context::begin);
-                        (target, context)
+                        let surrounding = target.as_ref().filter(|_| wanted).and_then(|target| {
+                            surrounding(
+                                target,
+                                |pid| context::begin(pid)?.finish(),
+                                || paster.focused(),
+                            )
+                        });
+                        (target, surrounding)
                     })
                 };
                 std::thread::spawn(move || {
@@ -673,10 +675,8 @@ impl Runtime {
                             )?
                             .trim()
                             .to_owned();
-                        let (target, context) = focus.join().unwrap_or((None, None));
-                        let surrounding = context
-                            .and_then(context::Capture::finish)
-                            .unwrap_or_default();
+                        let (target, surrounding) = focus.join().unwrap_or((None, None));
+                        let surrounding = surrounding.unwrap_or_default();
                         let text = client.cleanup(
                             text,
                             settings.cleanup,
@@ -701,6 +701,18 @@ impl Runtime {
         }
     }
 }
+/// Nearby text read from `target`'s process, kept only when `focused` still reports
+/// that same window once it's read. AT-SPI identifies only the process, so another
+/// of its windows focused meanwhile, or a focus that can't be confirmed, gives none.
+fn surrounding(
+    target: &Target,
+    read: impl FnOnce(u32) -> Option<String>,
+    focused: impl FnOnce() -> Option<Target>,
+) -> Option<String> {
+    let text = read(target.pid?)?;
+    (focused().as_ref() == Some(target)).then_some(text)
+}
+
 struct Host(Weak<Runtime>);
 impl OptionsHost for Host {
     fn closed(&self) {
@@ -771,5 +783,39 @@ impl OptionsHost for Host {
             // Deferred: the page's own callback is still on the stack and may be replaced.
             slint::Timer::single_shot(Duration::ZERO, move || app.listen_action(action));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Failure modes: text from another window of the paste target's process, or from
+    // a window whose focus can't be confirmed, reaches cleanup.
+    use super::*;
+
+    fn window(id: &str, pid: Option<u32>) -> Target {
+        Target {
+            id: id.into(),
+            class: "editor".into(),
+            pid,
+        }
+    }
+
+    #[test]
+    fn nearby_text_needs_the_same_window_focused_after_reading() {
+        let target = window("a", Some(7));
+        let read = |pid| (pid == 7).then(|| "before [cursor]".to_owned());
+        assert_eq!(
+            surrounding(&target, read, || Some(target.clone())).as_deref(),
+            Some("before [cursor]")
+        );
+        // Another window of the same process took focus while reading.
+        assert_eq!(
+            surrounding(&target, read, || Some(window("b", Some(7)))),
+            None
+        );
+        assert_eq!(surrounding(&target, read, || None), None);
+        // Without a process there is nothing to read from.
+        let unread = |_| -> Option<String> { panic!("read without a process") };
+        assert_eq!(surrounding(&window("a", None), unread, || None), None);
     }
 }
