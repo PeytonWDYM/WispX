@@ -30,7 +30,12 @@ use windows::{
 
 enum Mode {
     Idle,
-    Recording { levels: Levels, locked: bool },
+    /// `listening` marks Listen's capture rather than dictation.
+    Recording {
+        levels: Levels,
+        locked: bool,
+        listening: bool,
+    },
     Transcribing,
     Message,
 }
@@ -170,6 +175,7 @@ impl State {
                 self.mode = Mode::Recording {
                     levels,
                     locked: false,
+                    listening: false,
                 };
                 self.preview_start = None;
                 self.motion.morph(156.0, 38.0, 1.0, Ease::Back(0.45), now);
@@ -191,6 +197,33 @@ impl State {
                 self.motion.lock.set(1.0, 180, Ease::Quadratic, 0, now);
                 self.motion.dot.set(1.0, 180, Ease::Quadratic, 0, now);
                 self.motion.pop(1.04, 160, now);
+            }
+            Pill::Listening(levels) => {
+                let fresh = !matches!(
+                    self.mode,
+                    Mode::Recording {
+                        listening: true,
+                        ..
+                    }
+                );
+                if fresh {
+                    self.reposition(true)?;
+                    self.motion.pop(1.06, 160, now);
+                }
+                self.mode = Mode::Recording {
+                    levels,
+                    locked: true,
+                    listening: true,
+                };
+                self.preview_start = None;
+                self.locked_at = now;
+                self.motion.morph(176.0, 38.0, 1.0, Ease::Back(0.45), now);
+                self.motion.bars.set(1.0, 160, Ease::Quadratic, 0, now);
+                self.motion.message.set(0.0, 100, Ease::Quadratic, 0, now);
+                self.motion.lock.set(1.0, 180, Ease::Quadratic, 0, now);
+                self.motion.dot.set(1.0, 180, Ease::Quadratic, 0, now);
+                self.motion.glow.set(0.0, 150, Ease::Quadratic, 0, now);
+                self.motion.shadow.set(0.5, 200, Ease::Quadratic, 0, now);
             }
             Pill::Transcribing => {
                 self.mode = Mode::Transcribing;

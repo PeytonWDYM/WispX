@@ -12,6 +12,7 @@ pub const LSHIFT: u8 = 0xa0;
 pub const RSHIFT: u8 = 0xa1;
 pub const ESCAPE: u8 = 0x1b;
 pub const SPACE: u8 = 0x20;
+pub const BACKSPACE: u8 = 0x08;
 const MODIFIERS: [u8; 8] = [LCTRL, RCTRL, LWIN, RWIN, LALT, RALT, LSHIFT, RSHIFT];
 
 /// Canonically ordered modifiers and at most one main key, saved as readable JSON.
@@ -33,6 +34,14 @@ impl Default for Hotkey {
             modifiers: vec![LCTRL, LWIN],
             main: None,
         }
+    }
+}
+
+impl Hotkey {
+    /// Ctrl + Shift + F8 toggles Listen: no OS claims it, it can't start the default
+    /// Ctrl + Win dictation on the way in, and Wayland can bind it as-is.
+    pub fn listen_default() -> Self {
+        Self::new([LCTRL, LSHIFT, 0x77]).expect("valid chord")
     }
 }
 
@@ -115,11 +124,39 @@ impl Hotkey {
             }
         })
     }
+    fn groups(&self) -> BTreeSet<usize> {
+        self.modifiers.iter().filter_map(|&k| group(k)).collect()
+    }
     pub fn masks_menu(&self) -> bool {
         self.modifiers
             .iter()
             .any(|&k| matches!(group(k), Some(1 | 2)))
     }
+}
+
+/// Why `listen` can't sit beside the dictation shortcut, or `None` when both work.
+/// Listen toggles on a key press, so it needs a main key; and pressing it must not
+/// first hold the dictation chord or match a Wayland hands-free/cancel shortcut.
+pub fn listen_conflict(dictation: &Hotkey, listen: &Hotkey) -> Option<&'static str> {
+    if listen.main_key().is_none() || !listen.is_valid() {
+        return Some("Use a modifier plus a key (like Ctrl + Shift + F8) or an F key for Listen.");
+    }
+    if listen.keys == dictation.keys {
+        return Some("That's already your dictation shortcut.");
+    }
+    if dictation.main_key().is_none() && dictation.groups().is_subset(&listen.groups()) {
+        return Some("Pressing it would start dictation first. Choose different modifiers.");
+    }
+    // The desktop's hands-free and cancel shortcuts reuse the dictation modifiers.
+    let portal = if dictation.main_key().is_some() && !dictation.groups().is_empty() {
+        dictation.groups()
+    } else {
+        Hotkey::default().groups()
+    };
+    if matches!(listen.main_key(), Some(SPACE | BACKSPACE)) && listen.groups() == portal {
+        return Some("Your desktop uses that for hands-free or cancel.");
+    }
+    None
 }
 
 // The stable System.Windows.Forms.Keys names used by the existing settings file.
@@ -411,5 +448,44 @@ mod tests {
         assert!(Hotkey::default().masks_menu());
         assert!("Alt+F9".parse::<Hotkey>().expect("alt").masks_menu());
         assert!(!right.masks_menu());
+    }
+
+    #[test]
+    fn listen_shortcut_must_not_overlap_dictation() {
+        let parse = |name: &str| name.parse::<Hotkey>().expect(name);
+        let listen = Hotkey::listen_default();
+        assert_eq!(listen.to_string(), "Ctrl + Shift + F8");
+        assert_eq!(listen_conflict(&Hotkey::default(), &listen), None);
+        for (dictation, listen) in [
+            // Listen toggles on a press, so it needs a main key.
+            ("Ctrl+Win", "Ctrl+Shift"),
+            ("Ctrl+Win", "RightAlt"),
+            // Same keys as dictation.
+            ("Ctrl+Shift+D", "Ctrl+Shift+D"),
+            // Holding the dictation modifiers on the way in starts dictation.
+            ("Ctrl+Win", "Ctrl+Win+L"),
+            ("Ctrl+Shift", "Ctrl+Shift+F8"),
+            ("RightCtrl", "Ctrl+F8"),
+            // Plasma's hands-free and cancel shortcuts.
+            ("Ctrl+Alt+D", "Ctrl+Alt+Back"),
+            ("F9", "Ctrl+Win+Back"),
+        ] {
+            assert!(
+                listen_conflict(&parse(dictation), &parse(listen)).is_some(),
+                "{dictation} / {listen}"
+            );
+        }
+        for (dictation, listen) in [
+            ("Ctrl+Win", "F8"),
+            ("Ctrl+Shift+D", "Ctrl+Shift+F8"),
+            ("RightAlt", "Ctrl+Shift+F8"),
+            ("Ctrl+Alt+D", "Ctrl+Back"),
+        ] {
+            assert_eq!(
+                listen_conflict(&parse(dictation), &parse(listen)),
+                None,
+                "{dictation} / {listen}"
+            );
+        }
     }
 }

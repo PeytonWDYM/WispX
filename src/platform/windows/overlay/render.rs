@@ -323,14 +323,22 @@ impl Renderer {
                     &brush,
                 );
             }
+            let listening = matches!(
+                state.mode,
+                super::Mode::Recording {
+                    listening: true,
+                    ..
+                }
+            );
             let lock_opacity = motion.lock.get(now) as f32 * opacity;
             if lock_opacity > 0.001 {
                 let brush = self.target.CreateSolidColorBrush(
                     &color(1.0, 1.0, 1.0, 217.0 / 255.0 * lock_opacity),
                     None,
                 )?;
+                // Segoe Fluent Icons: Headphone for Listen, Lock for hands-free.
                 self.target.DrawText(
-                    &[0xe72e],
+                    &[if listening { 0xe7f6 } else { 0xe72e }],
                     &self.icon,
                     &D2D_RECT_F {
                         left: left + 14.0,
@@ -349,13 +357,14 @@ impl Renderer {
             } else {
                 0.625 + 0.375 * (std::f64::consts::PI * elapsed / 0.7).cos()
             };
+            let dot_alpha = motion.dot.get(now) as f32 * opacity * pulse as f32;
+            // Listen's dot is blue, so it never reads as a dictation recording.
             let dot = self.target.CreateSolidColorBrush(
-                &color(
-                    1.0,
-                    90.0 / 255.0,
-                    95.0 / 255.0,
-                    motion.dot.get(now) as f32 * opacity * pulse as f32,
-                ),
+                &if listening {
+                    color(96.0 / 255.0, 165.0 / 255.0, 250.0 / 255.0, dot_alpha)
+                } else {
+                    color(1.0, 90.0 / 255.0, 95.0 / 255.0, dot_alpha)
+                },
                 None,
             )?;
             self.target.FillEllipse(

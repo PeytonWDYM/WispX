@@ -14,6 +14,10 @@ const CALLBACK: u32 = WM_APP + 1;
 #[derive(Clone, Copy)]
 pub enum TrayAction {
     Options,
+    /// Start Listen, or stop it and write notes.
+    Listen,
+    /// Open Options on the Listen page.
+    ListenPage,
     CopyLast,
     Help,
     Uninstall,
@@ -23,6 +27,8 @@ struct State {
     data: NOTIFYICONDATAW,
     settings: Settings,
     has_transcript: bool,
+    /// The Listen item's label, and whether it can be used now.
+    listen: (&'static str, bool),
     taskbar_created: u32,
     sink: Arc<dyn Fn(TrayAction) + Send + Sync>,
 }
@@ -63,6 +69,7 @@ impl Tray {
                 },
                 settings,
                 has_transcript: false,
+                listen: ("Start listening", true),
                 taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
                 sink,
             }));
@@ -95,11 +102,12 @@ impl Tray {
             let _ = Shell_NotifyIconW(operation, &state.data);
         }
     }
-    pub fn update(&self, settings: &Settings, has_transcript: bool) {
+    pub fn update(&self, settings: &Settings, has_transcript: bool, listen: (&'static str, bool)) {
         {
             let mut state = self.state.borrow_mut();
             state.settings = settings.clone();
             state.has_transcript = has_transcript;
+            state.listen = listen;
         }
         self.update_icon(NIM_MODIFY);
     }
@@ -147,16 +155,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                         sink(TrayAction::Options);
                     }
                     WM_RBUTTONUP | WM_CONTEXTMENU => {
-                        let (title, has_transcript, sink) = {
+                        let (title, has_transcript, listen, sink) = {
                             let state = state.borrow();
                             (
                                 format!("WispX · hold {}", state.settings.hotkey),
                                 state.has_transcript,
+                                state.listen,
                                 state.sink.clone(),
                             )
                         };
                         // TrackPopupMenu dispatches callbacks: no RefCell borrow may outlive this snapshot.
-                        let _ = menu(hwnd, &title, has_transcript, &*sink);
+                        let _ = menu(hwnd, &title, has_transcript, listen, &*sink);
                     }
                     _ => {}
                 }
@@ -170,6 +179,7 @@ fn menu(
     hwnd: HWND,
     title: &str,
     has_transcript: bool,
+    (listen, listen_enabled): (&str, bool),
     sink: &dyn Fn(TrayAction),
 ) -> windows::core::Result<()> {
     // SAFETY: the popup owns copied menu strings and is destroyed after TrackPopupMenu returns.
@@ -187,6 +197,19 @@ fn menu(
                 w!("⚠ Not signed in. Open Codex and sign in")
             },
         )?;
+        AppendMenuW(menu, MF_SEPARATOR, 0, None)?;
+        let listen = wide(listen);
+        AppendMenuW(
+            menu,
+            if listen_enabled {
+                MF_STRING
+            } else {
+                MF_STRING | MF_GRAYED
+            },
+            8,
+            PCWSTR(listen.as_ptr()),
+        )?;
+        AppendMenuW(menu, MF_STRING, 9, w!("Listen notes…"))?;
         AppendMenuW(menu, MF_SEPARATOR, 0, None)?;
         AppendMenuW(
             menu,
@@ -225,6 +248,8 @@ fn menu(
             5 => Some(TrayAction::Help),
             6 => Some(TrayAction::Uninstall),
             7 => Some(TrayAction::Quit),
+            8 => Some(TrayAction::Listen),
+            9 => Some(TrayAction::ListenPage),
             _ => None,
         } {
             sink(action);

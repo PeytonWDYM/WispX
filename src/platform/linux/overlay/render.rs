@@ -1,6 +1,6 @@
 //! Paints the pill into a premultiplied pixmap with the Windows renderer's geometry:
 //! a 480 x 120 logical canvas, multiplied by the output scale.
-use super::scene::Scene;
+use super::scene::{Mode, Scene};
 use crate::app::MessageKind;
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 use std::time::Instant;
@@ -199,14 +199,21 @@ impl Renderer {
                 }
             }
         }
+        let listening = matches!(
+            scene.mode,
+            Mode::Recording {
+                listening: true,
+                ..
+            }
+        );
         let lock = motion.lock.get(now) as f32 * opacity;
         if lock > 0.001 {
-            self.padlock(
-                left + 21.0,
-                center_y,
-                rgba(1.0, 1.0, 1.0, 217.0 / 255.0 * lock),
-                transform,
-            );
+            let color = rgba(1.0, 1.0, 1.0, 217.0 / 255.0 * lock);
+            if listening {
+                self.headphones(left + 21.0, center_y, color, transform);
+            } else {
+                self.padlock(left + 21.0, center_y, color, transform);
+            }
         }
         let elapsed = now.duration_since(scene.locked_at).as_secs_f64() - 0.2;
         let pulse = if elapsed < 0.0 {
@@ -218,12 +225,13 @@ impl Renderer {
         if dot > 0.001
             && let Some(path) = PathBuilder::from_circle(right - 18.0, center_y, 3.0)
         {
-            fill(
-                &mut self.pixmap,
-                &path,
-                rgba(1.0, 90.0 / 255.0, 95.0 / 255.0, dot),
-                transform,
-            );
+            // Listen's dot is blue, so it never reads as a dictation recording.
+            let color = if listening {
+                rgba(96.0 / 255.0, 165.0 / 255.0, 250.0 / 255.0, dot)
+            } else {
+                rgba(1.0, 90.0 / 255.0, 95.0 / 255.0, dot)
+            };
+            fill(&mut self.pixmap, &path, color, transform);
         }
         let message = motion.message.get(now) as f32 * opacity;
         if message > 0.001 {
@@ -267,6 +275,34 @@ impl Renderer {
                 transform,
                 None,
             );
+        }
+    }
+    /// A headband over two ear cups: Listen's mark where hands-free shows a padlock.
+    fn headphones(&mut self, cx: f32, cy: f32, color: Color, transform: Transform) {
+        let mut band = PathBuilder::new();
+        band.move_to(cx - 4.6, cy + 2.0);
+        band.line_to(cx - 4.6, cy);
+        band.cubic_to(cx - 4.6, cy - 6.2, cx + 4.6, cy - 6.2, cx + 4.6, cy);
+        band.line_to(cx + 4.6, cy + 2.0);
+        if let Some(path) = band.finish() {
+            let mut paint = Paint::default();
+            paint.set_color(color);
+            paint.anti_alias = true;
+            self.pixmap.stroke_path(
+                &path,
+                &paint,
+                &Stroke {
+                    width: 1.3,
+                    ..Stroke::default()
+                },
+                transform,
+                None,
+            );
+        }
+        for x in [cx - 5.6, cx + 2.6] {
+            if let Some(cup) = rounded(x, cy, x + 3.0, cy + 5.0, 1.2) {
+                fill(&mut self.pixmap, &cup, color, transform);
+            }
         }
     }
     /// Centered, single line, trimmed with an ellipsis like DirectWrite's character trimming.

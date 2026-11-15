@@ -132,8 +132,13 @@ pub fn style_options(window: &OptionsWindow) {
     glyphs.set_startup("↻".into());
     glyphs.set_context("¶".into());
     glyphs.set_dictionary("≡".into());
+    glyphs.set_listen("☊".into());
     window.set_startup_title("Start when you sign in".into());
-    window.set_context_supported(false);
+    window.set_context_detail(
+        "Send up to 2,000 characters around your cursor so punctuation and wording flow. \
+         Never from password fields. Works in apps that share text with accessibility tools."
+            .into(),
+    );
 }
 
 #[cfg(test)]

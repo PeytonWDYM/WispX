@@ -226,6 +226,7 @@ pub fn tour(dir: &std::path::Path) -> std::io::Result<()> {
             ("idle", Pill::Idle),
             ("recording", Pill::Recording(Levels::default())),
             ("locked", Pill::Locked),
+            ("listening", Pill::Listening(Levels::default())),
             ("transcribing", Pill::Transcribing),
             (
                 "message",

@@ -914,6 +914,10 @@ mod tests {
         assert!(next.lowered.is_empty());
     }
 
+    /// Bounds a wait for the worker only to fail a hung test. Journal writes sync to
+    /// disk, which can stall for seconds on a busy machine, so it is generous.
+    const HANG: Duration = Duration::from_secs(60);
+
     struct Harness {
         fake: Fake,
         commands: Sender<Command>,
@@ -947,7 +951,7 @@ mod tests {
         fn settle(&self) {
             let (done, finished) = mpsc::channel();
             self.send(Command::Flush(done));
-            finished.recv_timeout(Duration::from_secs(5)).unwrap();
+            finished.recv_timeout(HANG).unwrap();
         }
         fn stop(self) -> Fake {
             drop(self.commands);
@@ -989,7 +993,7 @@ mod tests {
         });
         commands.send(Command::Lower(1)).unwrap();
         fake.add("late", None, &[0.7]);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + HANG;
         while !close(&fake.volume("late"), &[0.14]) {
             assert!(std::time::Instant::now() < deadline, "never lowered");
             thread::sleep(Duration::from_millis(5));
@@ -1045,7 +1049,7 @@ mod tests {
     }
 
     fn eventually(what: &str, done: impl Fn() -> bool) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + HANG;
         while !done() {
             assert!(std::time::Instant::now() < deadline, "{what}");
             thread::sleep(Duration::from_millis(5));

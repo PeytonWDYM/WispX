@@ -1,11 +1,12 @@
 //! UI-thread application host, structured like the Windows runtime. Worker results
 //! always return through Slint's event loop.
 use super::{
-    desktop,
+    context, desktop,
     hotkey::{DesktopStatus, HookMessage, Hotkeys},
     instance::InstanceEvent,
     overlay::Overlay,
-    paste::Paster,
+    paste::{Paster, Target},
+    save,
     session::{Protocol, Session},
     sound,
     tray::{Tray, TrayAction},
@@ -14,17 +15,21 @@ use crate::{
     app::{Controller, Delivery, Dictation, DictationError, Finish, MessageKind, Pill},
     audio::{duck, opus, sounds::Cue},
     hotkey_machine::HotkeyEvent,
+    listen::{self, Listen, Stage},
     settings::{Settings, SettingsStore},
     stats::StatsStore,
     transcribe::{ChatGpt, auth},
-    ui::{DesktopShortcut, Options, OptionsHost},
+    ui::{DesktopShortcut, ListenAction, Options, OptionsHost},
 };
 use std::{
     cell::{Cell, RefCell},
+    path::PathBuf,
     rc::{Rc, Weak},
     sync::Arc,
     time::Duration,
 };
+/// Options' Listen page, for opening it from the tray or after Stop.
+const LISTEN_PAGE: i32 = 4;
 thread_local! { static APP: RefCell<Option<Rc<Runtime>>> = const { RefCell::new(None) }; }
 pub enum Event {
     Hook(HookMessage),
@@ -33,6 +38,10 @@ pub enum Event {
     Complete(Result<Dictation, DictationError>),
     /// Copy last transcript failed; the reason for the pill.
     CopyFailed(String),
+    Listen(u64, listen::Update),
+    /// Notes of session `0` at revision `1` were saved to the path, or the save failed.
+    ListenSaved(u64, u64, Result<Option<PathBuf>, String>),
+    ListenCopied(Result<(), String>),
 }
 pub fn post(event: Event) {
     let _ = slint::invoke_from_event_loop(move || {
@@ -43,6 +52,11 @@ pub fn post(event: Event) {
 }
 pub struct Runtime {
     controller: RefCell<Controller>,
+    listen: Rc<RefCell<Listen>>,
+    /// Ends a Listen capture at `listen::MAX_SESSION`.
+    listen_timer: slint::Timer,
+    /// Brings the Listen pill back after a message shown over it.
+    pill_restore: slint::Timer,
     store: Rc<RefCell<SettingsStore>>,
     stats: Rc<RefCell<StatsStore>>,
     options: RefCell<Option<Rc<Options>>>,
@@ -72,6 +86,7 @@ impl Runtime {
         let hotkeys = Hotkeys::start(
             &session,
             settings.hotkey.clone(),
+            settings.listen_hotkey.clone(),
             Arc::new(|message| post(Event::Hook(message))),
         );
         let paster = Paster::start(&session);
@@ -83,8 +98,15 @@ impl Runtime {
         client.warmup();
         // Restores playback a crashed WispX left lowered.
         duck::start();
+        let listen = Listen::new(
+            Arc::new(client.clone()),
+            Arc::new(|generation, update| post(Event::Listen(generation, update))),
+        );
         let app = Rc::new(Self {
             controller: RefCell::new(Controller::default()),
+            listen: Rc::new(RefCell::new(listen)),
+            listen_timer: slint::Timer::default(),
+            pill_restore: slint::Timer::default(),
             store: Rc::new(RefCell::new(store)),
             stats: Rc::new(RefCell::new(StatsStore::load()?)),
             options: RefCell::new(None),
@@ -111,7 +133,10 @@ impl Runtime {
                     ui.cleanup();
                 }
                 app.controller.borrow_mut().cancel();
+                // Stops capture, uploads and notes requests; nothing of it is written anywhere.
+                app.listen.borrow_mut().shutdown();
                 app.max_timer.stop();
+                app.listen_timer.stop();
                 // Give lowered playback a moment to return before the process exits.
                 duck::flush(Duration::from_secs(3));
             }
@@ -130,15 +155,22 @@ impl Runtime {
                 hold,
                 hands_free,
                 cancel,
+                listen,
             }) => format!(
                 "Hold {hold} → talk → let go. Text is typed where your cursor is.\n\
-                 {hands_free} → hands-free. {hold} again to finish.\n{cancel} → cancel."
+                 {hands_free} → hands-free. {hold} again to finish.\n{cancel} → cancel.\n\
+                 {listen} → listen to computer audio and write notes."
             ),
             _ => {
-                let hotkey = &self.store.borrow().value.hotkey;
+                let settings = &self.store.borrow().value;
+                let hotkey = &settings.hotkey;
+                let listen = settings
+                    .listen_shortcut()
+                    .map_or("Tray → Start listening".into(), |key| key.to_string());
                 format!(
                     "Hold {hotkey} → talk → let go. Text is typed where your cursor is.\n\
-                     {hotkey}, then Space → hands-free. {hotkey} again to finish.\nEsc → cancel."
+                     {hotkey}, then Space → hands-free. {hotkey} again to finish.\nEsc → cancel.\n\
+                     {listen} → listen to computer audio and write notes."
                 )
             }
         }
@@ -170,7 +202,43 @@ impl Runtime {
         }
         Ok(())
     }
+    /// Shows a pill, keeping Listen's visible while it captures: dictation's idle or
+    /// finished states give way to it, and a message gives it back once it expires.
     fn show(&self, pill: Pill) {
+        let listening = self.listen.borrow().pill();
+        let pill = match (listening, pill) {
+            (Some(listening), Pill::Idle | Pill::Done | Pill::Transcribing)
+                if !self.controller.borrow().recording() =>
+            {
+                listening
+            }
+            (
+                Some(_),
+                Pill::Message {
+                    text,
+                    kind,
+                    seconds,
+                },
+            ) => {
+                self.pill_restore.start(
+                    slint::TimerMode::SingleShot,
+                    Duration::from_secs_f64(seconds),
+                    || {
+                        if let Some(app) = APP.with(|app| app.borrow().clone())
+                            && let Some(pill) = app.listen.borrow().pill()
+                        {
+                            app.show(pill);
+                        }
+                    },
+                );
+                Pill::Message {
+                    text,
+                    kind,
+                    seconds,
+                }
+            }
+            (_, pill) => pill,
+        };
         if let Err(error) = self.overlay.show(pill) {
             eprintln!("Overlay: {error}");
         }
@@ -184,7 +252,150 @@ impl Runtime {
         self.tray.update(
             self.hold_text(),
             self.controller.borrow().last_transcript.is_some(),
+            self.listen.borrow().tray_item(),
         );
+    }
+    /// After any Listen change: the shortcut's Esc, the tray item, and the page.
+    fn sync_listen(&self) {
+        let capturing = self.listen.borrow().capturing();
+        self.hotkeys.set_listening(capturing);
+        if !capturing {
+            self.listen_timer.stop();
+        }
+        self.refresh_tray();
+        if let Some(ui) = self.options.borrow().as_ref() {
+            ui.refresh_listen();
+        }
+    }
+    fn listen_refused(self: &Rc<Self>, message: &str) {
+        self.show(Pill::message(message, MessageKind::Warn, 3.5));
+        if let Some(ui) = self.options.borrow().as_ref() {
+            ui.listen_error(message);
+        }
+    }
+    fn start_listen(self: &Rc<Self>) {
+        if auth::login().is_none() {
+            self.listen_refused("Sign in to the Codex app first");
+            return;
+        }
+        if self.controller.borrow().recording() {
+            self.listen_refused("Finish dictating first, then start Listen.");
+            return;
+        }
+        if let Some(ui) = self.options.borrow().as_ref() {
+            ui.stop_test();
+        }
+        let request = listen::Request::from_settings(&self.store.borrow().value);
+        let result = self.listen.borrow_mut().start(request);
+        match result {
+            Ok(()) => {
+                self.cue(Cue::Start);
+                let weak = Rc::downgrade(self);
+                self.listen_timer.start(
+                    slint::TimerMode::SingleShot,
+                    listen::MAX_SESSION,
+                    move || {
+                        if let Some(app) = weak.upgrade() {
+                            app.stop_listen();
+                        }
+                    },
+                );
+                if let Some(pill) = self.listen.borrow().pill() {
+                    self.pill_restore.stop();
+                    if let Err(error) = self.overlay.show(pill) {
+                        eprintln!("Overlay: {error}");
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("Listen: {error}");
+                self.listen_refused(&error);
+                if error == listen::UNSAVED {
+                    self.open_options_page(LISTEN_PAGE);
+                }
+            }
+        }
+        self.sync_listen();
+    }
+    fn stop_listen(self: &Rc<Self>) {
+        if self.listen.borrow_mut().stop() {
+            self.cue(Cue::Stop);
+            self.sync_listen();
+            if !self.controller.borrow().recording() {
+                self.show(Pill::Transcribing);
+            }
+            self.open_options_page(LISTEN_PAGE);
+        }
+    }
+    fn toggle_listen(self: &Rc<Self>) {
+        let stage = self.listen.borrow().stage();
+        match stage {
+            Stage::Listening => self.stop_listen(),
+            Stage::Setup | Stage::Notes => self.start_listen(),
+            _ => self.listen_refused("Listen is still writing your notes."),
+        }
+    }
+    fn discard_listen(self: &Rc<Self>, cue: bool) {
+        if self.listen.borrow_mut().discard() {
+            if cue {
+                self.cue(Cue::Cancel);
+            }
+            self.sync_listen();
+            if !self.controller.borrow().recording() && self.controller.borrow().in_flight == 0 {
+                self.show(Pill::Idle);
+            }
+        }
+    }
+    fn listen_action(self: &Rc<Self>, action: ListenAction) {
+        match action {
+            ListenAction::Start => self.start_listen(),
+            ListenAction::Stop => self.stop_listen(),
+            ListenAction::Discard => self.discard_listen(false),
+            ListenAction::NewSession => {
+                self.listen.borrow_mut().close_notes();
+                self.sync_listen();
+            }
+            ListenAction::RetrySummary => {
+                self.listen.borrow_mut().retry_summary();
+                self.sync_listen();
+            }
+            ListenAction::Copy(text) => {
+                if text.is_empty() {
+                    return;
+                }
+                let paster = self.paster.clone();
+                std::thread::spawn(move || post(Event::ListenCopied(paster.copy(&text))));
+            }
+            ListenAction::Save => {
+                let Some(request) = self.listen.borrow().save_request() else {
+                    return;
+                };
+                std::thread::spawn(move || {
+                    let result = save::choose(&request.name).and_then(|path| {
+                        let Some(path) = path else {
+                            return Ok(None);
+                        };
+                        crate::settings::atomic_write(&path, request.text.as_bytes())
+                            .map(|()| Some(path))
+                            .map_err(|e| format!("Couldn't save the notes: {e}"))
+                    });
+                    post(Event::ListenSaved(
+                        request.generation,
+                        request.revision,
+                        result,
+                    ));
+                });
+            }
+        }
+    }
+    fn request_quit(self: &Rc<Self>) {
+        let blocked = self.listen.borrow().blocks_quit();
+        if blocked {
+            self.open_options_page(LISTEN_PAGE);
+            self.listen_refused("Save or discard your Listen session before quitting.");
+        } else {
+            let _ = slint::quit_event_loop();
+        }
     }
     fn event(self: &Rc<Self>, event: Event) {
         match event {
@@ -232,8 +443,45 @@ impl Runtime {
             Event::Instance(InstanceEvent::Wake) | Event::Tray(TrayAction::Options) => {
                 self.open_options()
             }
+            Event::Tray(TrayAction::Listen) => self.toggle_listen(),
+            Event::Tray(TrayAction::ListenPage) => self.open_options_page(LISTEN_PAGE),
+            Event::Listen(generation, update) => {
+                let pill = self.listen.borrow_mut().update(generation, update);
+                self.sync_listen();
+                if let Some(pill) = pill
+                    && !self.controller.borrow().recording()
+                {
+                    self.show(pill);
+                }
+            }
+            Event::ListenSaved(generation, revision, result) => match result {
+                Ok(Some(path)) => {
+                    let marked = self
+                        .listen
+                        .borrow_mut()
+                        .mark_saved(generation, revision, path);
+                    self.sync_listen();
+                    if !marked
+                        && generation == self.listen.borrow().generation()
+                        && let Some(ui) = self.options.borrow().as_ref()
+                    {
+                        ui.listen_error(listen::CHANGED_WHILE_SAVING);
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("Listen: {error}");
+                    if let Some(ui) = self.options.borrow().as_ref() {
+                        ui.listen_error(&error);
+                    }
+                }
+            },
+            Event::ListenCopied(result) => self.show(match result {
+                Ok(()) => Pill::message("Copied", MessageKind::Success, 1.6),
+                Err(error) => Pill::message(error, MessageKind::Error, 2.6),
+            }),
             Event::Instance(InstanceEvent::Quit) | Event::Tray(TrayAction::Quit) => {
-                let _ = slint::quit_event_loop();
+                self.request_quit();
             }
             Event::Tray(TrayAction::CopyLast) => {
                 if let Some(text) = self.controller.borrow().last_transcript.clone() {
@@ -273,6 +521,12 @@ impl Runtime {
             }
         }
     }
+    fn open_options_page(self: &Rc<Self>, page: i32) {
+        self.open_options();
+        if let Some(ui) = self.options.borrow().as_ref() {
+            ui.show_page(page);
+        }
+    }
     fn open_options(self: &Rc<Self>) {
         if self.options.borrow().is_none() {
             let host = Rc::new(Host(Rc::downgrade(self)));
@@ -294,6 +548,24 @@ impl Runtime {
     }
     fn hotkey(self: &Rc<Self>, event: HotkeyEvent) {
         match event {
+            HotkeyEvent::ListenToggle => self.toggle_listen(),
+            HotkeyEvent::ListenCancel => self.discard_listen(true),
+            HotkeyEvent::Start if self.listen.borrow().capturing() => {
+                self.hotkeys.force_idle();
+                let stop = self
+                    .store
+                    .borrow()
+                    .value
+                    .listen_shortcut()
+                    .map_or("Stop it in Options".into(), |key| {
+                        format!("Press {key} to stop it")
+                    });
+                self.show(Pill::message(
+                    format!("Listen is running. {stop}"),
+                    MessageKind::Warn,
+                    3.0,
+                ));
+            }
             HotkeyEvent::Start => {
                 if let Some(ui) = self.options.borrow().as_ref() {
                     ui.stop_test();
@@ -304,8 +576,6 @@ impl Runtime {
                     .start(&self.store.borrow().value);
                 match result {
                     Ok(Some(pill)) => {
-                        // Linux has no accessibility reader for nearby text yet; cleanup
-                        // runs without context rather than guessing at it.
                         self.show(pill);
                         self.cue(Cue::Start);
                         let weak = Rc::downgrade(self);
@@ -376,9 +646,22 @@ impl Runtime {
                 // The window focused as dictation ends is the only paste target.
                 // Asking can take KWin a moment, so it runs beside the recorder
                 // stopping rather than before it; no answer means copy only.
+                // Nearby text comes from that same window, read while the
+                // recording uploads.
                 let focus = {
                     let paster = paster.clone();
-                    std::thread::spawn(move || paster.focused())
+                    let wanted = context::wanted(&settings, auth::login().map(|l| l.mode));
+                    std::thread::spawn(move || {
+                        let target = paster.focused();
+                        let surrounding = target.as_ref().filter(|_| wanted).and_then(|target| {
+                            surrounding(
+                                target,
+                                |pid| context::begin(pid)?.finish(),
+                                || paster.focused(),
+                            )
+                        });
+                        (target, surrounding)
+                    })
                 };
                 std::thread::spawn(move || {
                     let result = (|| {
@@ -392,8 +675,15 @@ impl Runtime {
                             )?
                             .trim()
                             .to_owned();
-                        let text = client.cleanup(text, settings.cleanup, "", &settings.dictionary);
-                        let target = focus.join().ok().flatten();
+                        let (target, surrounding) = focus.join().unwrap_or((None, None));
+                        let surrounding = surrounding.unwrap_or_default();
+                        let text = client.cleanup(
+                            text,
+                            settings.cleanup,
+                            &surrounding,
+                            &settings.dictionary,
+                        );
+                        let text = crate::transcribe::cleanup::join_context(text, &surrounding);
                         let delivery = if text.is_empty() {
                             Delivery::Copied
                         } else {
@@ -411,6 +701,18 @@ impl Runtime {
         }
     }
 }
+/// Nearby text read from `target`'s process, kept only when `focused` still reports
+/// that same window once it's read. AT-SPI identifies only the process, so another
+/// of its windows focused meanwhile, or a focus that can't be confirmed, gives none.
+fn surrounding(
+    target: &Target,
+    read: impl FnOnce(u32) -> Option<String>,
+    focused: impl FnOnce() -> Option<Target>,
+) -> Option<String> {
+    let text = read(target.pid?)?;
+    (focused().as_ref() == Some(target)).then_some(text)
+}
+
 struct Host(Weak<Runtime>);
 impl OptionsHost for Host {
     fn closed(&self) {
@@ -433,7 +735,7 @@ impl OptionsHost for Host {
     fn dictating(&self) -> bool {
         self.0
             .upgrade()
-            .is_some_and(|a| a.controller.borrow().recording())
+            .is_some_and(|a| a.controller.borrow().recording() || a.listen.borrow().capturing())
     }
     fn startup(&self) -> bool {
         desktop::startup_enabled()
@@ -443,7 +745,8 @@ impl OptionsHost for Host {
     }
     fn settings_changed(&self, settings: &Settings) {
         if let Some(app) = self.0.upgrade() {
-            app.hotkeys.set_hotkey(settings.hotkey.clone());
+            app.hotkeys
+                .set_hotkeys(settings.hotkey.clone(), settings.listen_hotkey.clone());
             app.overlay.set_idle_enabled(settings.idle_pill);
             if !app.controller.borrow().recording() && app.controller.borrow().in_flight == 0 {
                 app.show(Pill::Idle);
@@ -461,6 +764,9 @@ impl OptionsHost for Host {
             None => DesktopShortcut {
                 keys: vec!["Waiting for your desktop…".into()],
                 hint: "Confirm WispX's shortcuts in your desktop's dialog.".into(),
+                listen: vec!["Waiting for your desktop…".into()],
+                listen_hint: "Confirm WispX's shortcuts in your desktop's dialog.".into(),
+                listen_trigger: String::new(),
             },
         })
     }
@@ -468,5 +774,48 @@ impl OptionsHost for Host {
         if let Some(app) = self.0.upgrade() {
             app.hotkeys.configure();
         }
+    }
+    fn listen(&self) -> Option<Rc<RefCell<Listen>>> {
+        Some(self.0.upgrade()?.listen.clone())
+    }
+    fn listen_action(&self, action: ListenAction) {
+        if let Some(app) = self.0.upgrade() {
+            // Deferred: the page's own callback is still on the stack and may be replaced.
+            slint::Timer::single_shot(Duration::ZERO, move || app.listen_action(action));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Failure modes: text from another window of the paste target's process, or from
+    // a window whose focus can't be confirmed, reaches cleanup.
+    use super::*;
+
+    fn window(id: &str, pid: Option<u32>) -> Target {
+        Target {
+            id: id.into(),
+            class: "editor".into(),
+            pid,
+        }
+    }
+
+    #[test]
+    fn nearby_text_needs_the_same_window_focused_after_reading() {
+        let target = window("a", Some(7));
+        let read = |pid| (pid == 7).then(|| "before [cursor]".to_owned());
+        assert_eq!(
+            surrounding(&target, read, || Some(target.clone())).as_deref(),
+            Some("before [cursor]")
+        );
+        // Another window of the same process took focus while reading.
+        assert_eq!(
+            surrounding(&target, read, || Some(window("b", Some(7)))),
+            None
+        );
+        assert_eq!(surrounding(&target, read, || None), None);
+        // Without a process there is nothing to read from.
+        let unread = |_| -> Option<String> { panic!("read without a process") };
+        assert_eq!(surrounding(&window("a", None), unread, || None), None);
     }
 }

@@ -69,6 +69,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct Target {
     pub id: String,
     pub class: String,
+    /// The owning process as the desktop reports it; ties nearby text to this window.
+    pub pid: Option<u32>,
 }
 
 /// Why no key reached the target. Every variant means nothing was typed.
@@ -581,6 +583,7 @@ mod test_helpers {
         Target {
             id: id.into(),
             class: "editor".into(),
+            pid: None,
         }
     }
 }

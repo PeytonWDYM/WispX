@@ -17,6 +17,10 @@ pub enum HotkeyEvent {
     StopLocked,
     CancelSilent,
     Cancel,
+    /// The Listen shortcut was pressed: start, or stop and write notes.
+    ListenToggle,
+    /// Esc while Listen captures: discard the session.
+    ListenCancel,
 }
 /// Everything the hook must do in response to one key event.
 #[derive(Default, Debug)]
@@ -46,6 +50,9 @@ pub struct HotkeyMachine {
     swallow_space_up: bool,
     swallow_esc_up: bool,
     capture: Option<Vec<u8>>,
+    listen: Option<Hotkey>,
+    /// Listen is capturing, so Esc belongs to WispX.
+    listening: bool,
 }
 impl HotkeyMachine {
     pub fn new(hotkey: Hotkey) -> Self {
@@ -62,6 +69,19 @@ impl HotkeyMachine {
     }
     pub fn hotkey(&self) -> &Hotkey {
         &self.hotkey
+    }
+    /// `None` disables the Listen shortcut, as when it conflicts with dictation.
+    pub fn set_listen(&mut self, listen: Option<Hotkey>) {
+        self.listen = listen;
+    }
+    pub fn listen(&self) -> Option<&Hotkey> {
+        self.listen.as_ref()
+    }
+    pub fn set_listening(&mut self, listening: bool) {
+        self.listening = listening;
+    }
+    pub fn listening(&self) -> bool {
+        self.listening
     }
     /// Holding or hands-free, when Esc belongs to WispX.
     pub fn dictating(&self) -> bool {
@@ -152,6 +172,21 @@ impl HotkeyMachine {
             out.swallow = true;
             return out;
         }
+        // Checked before dictation: the two never share keys (hotkey::listen_conflict).
+        if down
+            && !repeat
+            && let Some(listen) = &self.listen
+            && Some(key) == listen.main_key()
+            && listen.matches(&self.held)
+            && !listen.has_extra_modifiers(&self.held)
+        {
+            // Its release is swallowed too, so the focused app never sees half a chord.
+            self.swallowed.insert(key);
+            out.swallow = true;
+            out.mask_start_menu = listen.masks_menu();
+            out.event = Some(HotkeyEvent::ListenToggle);
+            return out;
+        }
         if modifier {
             if self.hotkey.main_key().is_none() && down && matches && !self.combo_held {
                 self.combo_held = true;
@@ -194,8 +229,14 @@ impl HotkeyMachine {
                 self.swallow_esc_up = true;
                 out.swallow = true;
                 out.event = Some(HotkeyEvent::Cancel);
-            } else if !down && self.swallow_esc_up {
-                self.swallow_esc_up = false;
+            } else if down && !repeat && self.listening {
+                self.listening = false;
+                self.swallow_esc_up = true;
+                out.swallow = true;
+                out.event = Some(HotkeyEvent::ListenCancel);
+            } else if self.swallow_esc_up {
+                // Autorepeat of the claimed Esc stays claimed until its release.
+                self.swallow_esc_up = down;
                 out.swallow = true;
             }
         } else if key == SPACE
@@ -348,5 +389,74 @@ mod tests {
         m.begin_capture();
         assert_eq!(down(&mut m, ESCAPE).capture, Some(None));
         assert!(up(&mut m, ESCAPE).swallow);
+    }
+
+    #[test]
+    fn listen_toggles_once_per_press_and_owns_its_keys() {
+        let mut m = HotkeyMachine::default();
+        m.set_listen(Some(Hotkey::listen_default()));
+        down(&mut m, LCTRL);
+        down(&mut m, LSHIFT);
+        let press = down(&mut m, 0x77);
+        assert_eq!(press.event, Some(HotkeyEvent::ListenToggle));
+        assert!(press.swallow);
+        // Physical autorepeat neither retriggers nor leaks.
+        let repeat = down(&mut m, 0x77);
+        assert_eq!(repeat.event, None);
+        assert!(repeat.swallow);
+        // Release doesn't stop; it is swallowed with its press.
+        let release = up(&mut m, 0x77);
+        assert_eq!(release.event, None);
+        assert!(release.swallow);
+        assert!(!m.dictating(), "the Listen chord never holds dictation");
+        assert_eq!(down(&mut m, 0x77).event, Some(HotkeyEvent::ListenToggle));
+        up(&mut m, 0x77);
+        up(&mut m, LSHIFT);
+        up(&mut m, LCTRL);
+        // Extra or missing modifiers don't match.
+        down(&mut m, LCTRL);
+        assert_eq!(down(&mut m, 0x77).event, None);
+        up(&mut m, 0x77);
+        down(&mut m, LSHIFT);
+        down(&mut m, LALT);
+        assert_eq!(down(&mut m, 0x77).event, None);
+        up(&mut m, 0x77);
+        // Disabled when it conflicts.
+        m.set_listen(None);
+        up(&mut m, LALT);
+        assert_eq!(down(&mut m, 0x77).event, None);
+    }
+
+    #[test]
+    fn esc_discards_listen_only_while_capturing() {
+        let mut m = HotkeyMachine::default();
+        m.set_listen(Some(Hotkey::listen_default()));
+        let idle = down(&mut m, ESCAPE);
+        assert!(!idle.swallow && idle.event.is_none(), "Esc stays with apps");
+        up(&mut m, ESCAPE);
+        m.set_listening(true);
+        let cancel = down(&mut m, ESCAPE);
+        assert_eq!(cancel.event, Some(HotkeyEvent::ListenCancel));
+        assert!(cancel.swallow);
+        assert!(!m.listening());
+        // A held Esc repeats without a second event, and its release is swallowed.
+        let repeat = down(&mut m, ESCAPE);
+        assert!(repeat.swallow && repeat.event.is_none());
+        assert!(up(&mut m, ESCAPE).swallow);
+        assert!(!down(&mut m, ESCAPE).swallow);
+    }
+
+    #[test]
+    fn dictation_still_works_beside_listen() {
+        let mut m = HotkeyMachine::default();
+        m.set_listen(Some(Hotkey::listen_default()));
+        m.set_listening(true);
+        down(&mut m, LCTRL);
+        assert_eq!(down(&mut m, LWIN).event, Some(HotkeyEvent::Start));
+        assert_eq!(down(&mut m, SPACE).event, Some(HotkeyEvent::Lock));
+        up(&mut m, SPACE);
+        // Esc cancels the dictation first; Listen keeps its own session.
+        assert_eq!(down(&mut m, ESCAPE).event, Some(HotkeyEvent::Cancel));
+        assert!(m.listening());
     }
 }

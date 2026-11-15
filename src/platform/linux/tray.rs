@@ -12,6 +12,10 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug)]
 pub enum TrayAction {
     Options,
+    /// Start Listen, or stop it and write notes.
+    Listen,
+    /// Open Options on the Listen page.
+    ListenPage,
     CopyLast,
     Help,
     Quit,
@@ -20,6 +24,8 @@ type Sink = Arc<dyn Fn(TrayAction) + Send + Sync>;
 struct Item {
     hotkey: String,
     has_transcript: bool,
+    /// The Listen item's label, and whether it can be used now.
+    listen: (&'static str, bool),
     sink: Sink,
 }
 pub struct Tray {
@@ -106,6 +112,9 @@ impl ksni::Tray for Item {
                 .into(),
             ),
             MenuItem::Separator,
+            action(self.listen.0, self.listen.1, TrayAction::Listen),
+            action("Listen notes…", true, TrayAction::ListenPage),
+            MenuItem::Separator,
             action(
                 "Copy last transcript",
                 self.has_transcript,
@@ -124,6 +133,7 @@ impl Tray {
         let item = Item {
             hotkey,
             has_transcript: false,
+            listen: ("Start listening", true),
             sink,
         };
         let handle = match item.spawn() {
@@ -138,11 +148,12 @@ impl Tray {
     pub fn available(&self) -> bool {
         self.handle.as_ref().is_some_and(|h| !h.is_closed())
     }
-    pub fn update(&self, hotkey: String, has_transcript: bool) {
+    pub fn update(&self, hotkey: String, has_transcript: bool, listen: (&'static str, bool)) {
         if let Some(handle) = &self.handle {
             handle.update(|item| {
                 item.hotkey = hotkey;
                 item.has_transcript = has_transcript;
+                item.listen = listen;
             });
         }
     }

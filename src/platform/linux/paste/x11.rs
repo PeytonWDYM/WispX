@@ -13,6 +13,7 @@ pub(super) struct X11 {
     conn: RustConnection,
     root: xproto::Window,
     active: xproto::Atom,
+    pid: xproto::Atom,
 }
 impl X11 {
     pub(super) fn connect() -> Result<Self, Box<dyn std::error::Error>> {
@@ -22,7 +23,13 @@ impl X11 {
             .intern_atom(false, b"_NET_ACTIVE_WINDOW")?
             .reply()?
             .atom;
-        Ok(Self { conn, root, active })
+        let pid = conn.intern_atom(false, b"_NET_WM_PID")?.reply()?.atom;
+        Ok(Self {
+            conn,
+            root,
+            active,
+            pid,
+        })
     }
     fn keycode(&self, keysym: u32) -> Option<u8> {
         let setup = self.conn.setup();
@@ -90,9 +97,17 @@ impl Keyboard for X11 {
                 String::from_utf8_lossy(parts.get(1).copied().unwrap_or_default()).into_owned()
             })
             .unwrap_or_default();
+        let pid = self
+            .conn
+            .get_property(false, window, self.pid, xproto::AtomEnum::CARDINAL, 0, 1)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .and_then(|reply| reply.value32()?.next())
+            .filter(|&pid| pid > 0);
         Some(Target {
             id: window.to_string(),
             class,
+            pid,
         })
     }
     fn modifier_held(&self) -> Option<bool> {

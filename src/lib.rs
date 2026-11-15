@@ -3,6 +3,7 @@ pub mod app;
 pub mod audio;
 pub mod hotkey;
 pub mod hotkey_machine;
+pub mod listen;
 pub mod overlay;
 pub mod platform;
 pub mod settings;

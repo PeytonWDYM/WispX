@@ -1,5 +1,6 @@
 //! Linux desktop host: X11 and Wayland sessions, with Plasma as the primary target.
 pub mod clipboard;
+pub mod context;
 pub mod desktop;
 pub mod diagnose;
 pub mod duck;
@@ -10,6 +11,7 @@ pub mod notify;
 pub mod overlay;
 pub mod paste;
 pub mod runtime;
+pub mod save;
 pub mod session;
 pub mod sound;
 pub mod tray;

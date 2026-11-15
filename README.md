@@ -3,7 +3,7 @@
 [![Build](https://github.com/PeytonWDYM/WispX/actions/workflows/build.yml/badge.svg)](https://github.com/PeytonWDYM/WispX/actions/workflows/build.yml)
 [![Release](https://img.shields.io/github/v/release/PeytonWDYM/WispX)](https://github.com/PeytonWDYM/WispX/releases/latest)
 
-Push-to-talk dictation for Windows and Linux (X11 or Wayland, with KDE Plasma support). Hold **Ctrl + Win**, speak, and let go. Your words are typed wherever the cursor is.
+Push-to-talk dictation for Windows and Linux (X11 or Wayland, with KDE Plasma support). Hold **Ctrl + Win**, speak, and let go. Your words are typed wherever the cursor is. **Listen** turns a meeting, call or video playing on your computer into a formatted transcript and notes.
 
 <p align="center"><img src="docs/images/pill.png" alt="The WispX recording pill" width="172"></p>
 
@@ -20,7 +20,7 @@ The exe isn't code-signed, so SmartScreen may warn you. Click **More info → Ru
 
 On Linux, unpack `WispX-linux-x86_64.tar.gz` from the same release somewhere permanent, then run `WispX`. It adds an app launcher entry. Sign in to the Codex app or CLI with your ChatGPT account first.
 
-Linux needs ALSA's `libasound.so.2`. On Wayland, global shortcuts need `xdg-desktop-portal` 1.18+ and a GlobalShortcuts backend, such as Plasma 6's `xdg-desktop-portal-kde`. The pill uses layer shell where available (including KWin), or XWayland otherwise. A StatusNotifierItem tray shows the tray menu; without one, launch WispX again to open Options. Lowering other audio while dictating uses `pactl` (from `pulseaudio-utils` or `libpulse`) with PulseAudio or PipeWire's `pipewire-pulse`, plus PipeWire's `pw-cli` so apps' remembered volumes stay as they were; without them, dictation works and other audio is left alone. `WispX --diagnose` reports desktop support, and `WispX --uninstall` removes its launcher and sign-in entries.
+Linux needs ALSA's `libasound.so.2`. Listen records computer audio through `parec` and lists devices with `pactl` (both from `pulseaudio-utils`, or `libpulse` on Arch), with PulseAudio or PipeWire's `pipewire-pulse`; without them Listen says so and dictation is unaffected. On Wayland, global shortcuts need `xdg-desktop-portal` 1.18+ and a GlobalShortcuts backend, such as Plasma 6's `xdg-desktop-portal-kde`. The pill uses layer shell where available (including KWin), or XWayland otherwise. A StatusNotifierItem tray shows the tray menu; without one, launch WispX again to open Options. Lowering other audio while dictating uses `pactl` (from `pulseaudio-utils` or `libpulse`) with PulseAudio or PipeWire's `pipewire-pulse`, plus PipeWire's `pw-cli` so apps' remembered volumes stay as they were; without them, dictation works and other audio is left alone. `WispX --diagnose` reports desktop support, and `WispX --uninstall` removes its launcher and sign-in entries.
 
 ## Use
 
@@ -29,6 +29,7 @@ Linux needs ALSA's `libasound.so.2`. On Wayland, global shortcuts need `xdg-desk
 | Hold **Ctrl + Win** | Record while held, then type the text when released |
 | **Ctrl + Win**, then **Space** | Hands-free. Press Ctrl + Win again to finish |
 | **Esc** | Cancel |
+| **Ctrl + Shift + F8** | Listen: start, or stop and write notes. While Listen records, **Esc** discards the session |
 
 Click the tray icon to open **Options**. From there you can change the shortcut, microphone, language, sounds, and startup behavior.
 
@@ -40,9 +41,23 @@ The **Stats** page shows word counts and dictation speed, with a chart of the la
 
 <p align="center"><img src="docs/images/options-shortcut.png" alt="Options window showing the Shortcut page" width="640"></p>
 
+### Listen
+
+**Options → Listen** records what plays on one audio output (every app on it, not one window) and, if you turn on **Include my microphone**, your microphone too. Wear headphones when you include the microphone: WispX doesn't cancel echo, so speakers would be picked up twice. Other apps keep their normal volume.
+
+While it listens, WispX sends the audio in chunks of 20 to 40 seconds, cut at pauses, to ChatGPT's transcription endpoint and shows a rough draft. The pill turns into a headphone pill with a blue dot. Press the Listen shortcut again, **Stop & summarize**, or the tray's **Stop listening** to finish: WispX waits for the last chunks, formats the transcript (punctuation, paragraphs, dictionary spellings, timestamps; nothing added) in sections of about ten minutes, then writes a summary with a TL;DR, decisions and action items. Owners appear only when the transcript names them.
+
+Nothing is written to disk until you choose **Save notes**, which saves Markdown wherever you pick. **Copy** copies the summary or transcript. Notes stay in WispX until you close them, even after closing Options, and WispX won't start a new session over unsaved notes. Parts that couldn't be transcribed (a lasting outage, or an upload backlog of more than 12 chunks) are marked in the transcript and the notes say they're incomplete. If formatting fails, you get the original transcript, labeled; if the summary fails, the transcript is kept and **Try again** retries it. The original transcript is always one click away. Formatting and summaries need Codex signed in with ChatGPT. Sessions end on their own after four hours. If the summary arrives after you saved, the notes show as unsaved again until you save the new version. **Discard**, closing the notes, or quitting stops any formatting or summary requests still to come.
+
+Listen never switches devices on its own. If the output or microphone goes away, or the sound server moves the recording to another device, Listen stops and writes notes from what it heard, saying it stopped early. It does the same if no audio arrives for more than 10 seconds (for example, the computer slept) or WispX falls more than 20 seconds behind the audio.
+
+One recording runs at a time: dictation and the microphone test wait while Listen records, and Listen won't start during a dictation. Listen never types into other apps.
+
+Quit opens Listen while a session is active or recovered text is unsaved; save or explicitly discard it first. Sessions with no recovered speech can be replaced immediately. Transcription errors are reported separately from silence.
+
 ### Linux shortcuts and pasting
 
-On **X11**, shortcuts work as above; Win is the Super/Meta key. On **Wayland**, the desktop owns the shortcuts. Plasma can't bind a modifier-only chord, so the defaults are **Ctrl + Meta + D** to hold-to-talk, **Ctrl + Meta + Space** for hands-free (press either shortcut again to finish), and **Ctrl + Meta + Backspace** to cancel. **Change…** opens the desktop's shortcut settings.
+On **X11**, shortcuts work as above; Win is the Super/Meta key. On **Wayland**, the desktop owns the shortcuts. Plasma can't bind a modifier-only chord, so the defaults are **Ctrl + Meta + D** to hold-to-talk, **Ctrl + Meta + Space** for hands-free (press either shortcut again to finish), and **Ctrl + Meta + Backspace** to cancel (it also discards a Listen session that's recording). Listen asks for **Ctrl + Shift + F8**. **Change…** opens the desktop's shortcut settings, and Options shows the keys the desktop actually assigned. Without the portal, use **Start listening** in Options or the tray.
 
 Plasma asks you to confirm shortcuts and allow keyboard remote control on first start. WispX pastes only if the original window still has focus, using XTEST on X11 or KWin focus checks and the RemoteDesktop portal on Plasma Wayland. Other Wayland desktops fall back to copying for you to paste manually. Terminals get Ctrl + Shift + V. After a paste, your previous clipboard is restored unless you copied something newer.
 
@@ -50,15 +65,22 @@ Plasma asks you to confirm shortcuts and allow keyboard remote control on first 
 
 Cleanup is on by default. It runs a second pass that fixes punctuation, removes filler words, and keeps what you meant when you correct yourself mid-sentence. If cleanup fails or takes too long, WispX types the original transcript.
 
-- **Use nearby text** (Windows only) sends up to 2,000 characters around your cursor so the new text fits what's already there. It never reads password fields. In VS Code, turn on **Editor: Accessibility Support** so WispX can see the text. Linux cleanup runs without nearby text.
+- **Use nearby text** sends up to 2,000 characters around your cursor so the new text fits what's already there. It never reads password fields, and nothing is read while this or cleanup is off. In VS Code, turn on **Editor: Accessibility Support** so WispX can see the text.
 - **Dictionary** holds names, file paths, and code symbols that cleanup should spell exactly.
 
 <p align="center"><img src="docs/images/options-cleanup.png" alt="Options window showing the Cleanup page" width="640"></p>
+
+On Linux, nearby text comes from the accessibility bus (AT-SPI), and only from the focused, editable text field in the window that gets the transcript as dictation ends. That window's process must match the application on the bus, and the text is dropped if focus or the caret moves while it's read. If any of this can't be confirmed in about ¾ of a second, cleanup simply runs without it. WispX never turns accessibility on for you:
+
+- GTK apps (GNOME Text Editor, gedit, Mousepad and others) share their text out of the box.
+- Many Qt and KDE apps (Kate, KWrite), Firefox, and Chromium or Electron apps share it only while desktop accessibility is on, which screen readers switch on. Qt apps also share it when started with `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`, at some cost to their speed. Chromium and Electron apps, VS Code included, may also need to be started with `--force-renderer-accessibility`. WispX's fixture tests cover GTK 3 and GTK 4; the rest follow those toolkits' documented behavior.
+- Terminals, password fields, and apps whose process WispX can't match (Flatpak apps, for one) get no nearby text.
 
 ## Good to know
 
 - WispX uses ChatGPT's private transcription endpoint. It isn't a public API, so it can change without notice, and using it may go against OpenAI's terms.
 - ChatGPT keeps the audio for 30 days, the same as its built-in dictation.
+- Listen sends a long recording as many transcription requests, and its transcript text to the Codex responses endpoint for formatting and the summary. How much sustained use the private endpoints allow hasn't been established; rate limits show up as untranscribed gaps, never as silently missing text.
 - WispX reads your Codex sign-in from `%USERPROFILE%\.codex\auth.json` (`~/.codex/auth.json` on Linux). When the token expires, WispX refreshes it so Codex stays signed in.
 - Windows doesn't let WispX type into apps running as administrator.
 
@@ -91,7 +113,7 @@ cargo test --locked
 
 `scripts/e2e.ps1` runs the end-to-end test. It needs Microsoft Edge, `ffmpeg` and `ffprobe` on PATH, and a signed-in Codex app. The test synthesizes speech and transcribes it with the real endpoint. Then it checks cleanup and dictionary correction, tests reading nearby text in a throwaway Edge profile, and screenshots the UI. Everything it produces goes to `artifacts/e2e/`. `scripts/context-editors.ps1` runs a similar nearby-text check against VS Code and Notepad.
 
-On Linux, `bash scripts/ci-linux.sh` runs the checks, builds the Linux app, paints the pill offscreen, and cross-compiles the Windows exe. It downloads Rust, MinGW and any missing ALSA development packages into user-owned directories without sudo. `scripts/linux-smoke.sh` checks startup and UI in a private headless Plasma session; `cargo test --test linux_nested -- --ignored --nocapture --test-threads=1` exercises shortcuts and pasting there.
+On Linux, `bash scripts/ci-linux.sh` runs the checks, builds the Linux app, paints the pill offscreen, and cross-compiles the Windows exe. It downloads Rust, MinGW and any missing ALSA development packages into user-owned directories without sudo. `cargo test --lib audio::pulse -- --ignored` records a tone from a throwaway null sink and checks that removing or moving the device ends the capture. These tests require both `PULSE_SERVER` and `WISPX_TEST_PULSE_SERVER` set to the same private test server; they refuse to use an implicit desktop server. `WISPX_LISTEN_SHOTS=artifacts/listen-shots cargo test --lib ui::tests -- --ignored` renders each Listen state offscreen, with fixture text, for review. `scripts/linux-smoke.sh` checks startup and UI in a private headless Plasma session; `cargo test --test linux_nested -- --ignored --nocapture --test-threads=1` exercises shortcuts and pasting there, and `cargo test --test linux_context -- --ignored --nocapture --test-threads=1` reads nearby text from GTK 3 and GTK 4 fixture fields over a private accessibility bus. That one needs PyGObject with GTK 3 and 4.
 
 CI builds every push and pull request. Pushing a `v*` tag publishes a release.
 
@@ -101,11 +123,12 @@ CI builds every push and pull request. Pushing a `v*` tag publishes a release.
 src/
   app.rs             dictation controller
   hotkey*.rs         shortcut model and key state machine
-  audio/             recording, Opus/WebM encoding, cue sounds
-  transcribe/        Codex auth, ChatGPT transcription, cleanup
+  audio/             recording, Listen capture (WASAPI loopback, PulseAudio monitors), Opus/WebM, cue sounds
+  transcribe/        Codex auth, ChatGPT transcription, cleanup, responses
+  listen/            Listen sessions: chunking, ordered assembly, formatting, summary
   ui/                Options window logic
   platform/windows/  keyboard hook, tray, pill overlay, installer
-  platform/linux/    X11/portal shortcuts, clipboard, paste, tray, pill, autostart
+  platform/linux/    X11/portal shortcuts, clipboard, paste, nearby text, tray, pill, autostart
 ui/                  Slint layouts for Options
 scripts/             E2E tests, Linux smoke test and cross-build
 ```

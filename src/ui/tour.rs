@@ -26,14 +26,15 @@ pub fn start(ui: Rc<Options>, dir: PathBuf) -> io::Result<Timer> {
     fs::create_dir_all(&dir)?;
     // Each step is the file name and page of one capture; the Account page is shot blurred,
     // then again after the email is revealed.
-    const STEPS: [(&str, i32); 7] = [
+    const STEPS: [(&str, i32); 8] = [
         ("1-account", 0),
         ("1-account-revealed", 0),
         ("2-shortcut", 1),
         ("3-audio", 2),
         ("4-cleanup", 3),
-        ("5-stats", 4),
-        ("6-general", 5),
+        ("5-listen", 4),
+        ("6-stats", 5),
+        ("7-general", 6),
     ];
     let step = Cell::new(0);
     let original_size = Cell::new(ui.window.window().size());
@@ -70,13 +71,13 @@ pub fn start(ui: Rc<Options>, dir: PathBuf) -> io::Result<Timer> {
         ui.window.set_page(page);
         // Capture the full Stats page, including its reset card below the chart.
         let window = ui.window.window();
-        if name == "5-stats" {
+        if name == "6-stats" {
             original_size.set(window.size());
             window.set_size(slint::LogicalSize::new(
                 original_size.get().width as f32 / window.scale_factor(),
                 760.0,
             ));
-        } else if name == "6-general" {
+        } else if name == "7-general" {
             window.set_size(original_size.get());
         }
     });
